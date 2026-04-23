@@ -111,17 +111,22 @@ function renderTask(task, indexes, filters, uiState, visibilityCache, t) {
   const searchIsActive = Boolean(filters.search);
   const isOpen = searchIsActive || Boolean(uiState.taskOpen[task.id]);
   const statusClass = task.effectiveStatus;
-  const parent = task.parentTaskId ? indexes.tasksById.get(task.parentTaskId) : null;
-  const dependencyNames = task.dependencyIds.map((dependencyId) => indexes.tasksById.get(dependencyId)?.title).filter(Boolean);
-  const blockedByNames = task.blockedByIds.map((dependencyId) => indexes.tasksById.get(dependencyId)?.title).filter(Boolean);
-  const unlockNames = task.unlocksIds.map((unlockId) => indexes.tasksById.get(unlockId)?.title).filter(Boolean);
   const disableStatusAction = task.effectiveStatus === "blocked";
   const toggleLabel = task.childIds.length ? t("aria.toggleChildren") : t("aria.noChildren");
   const statusTitle = disableStatusAction ? t("errors.blockedStatus") : t("aria.changeStatus");
+  const nodeClasses = [
+    "task-node",
+    `status-${statusClass}`,
+    task.childIds.length ? "has-children" : "",
+    task.parentTaskId ? "is-child" : "is-root",
+    statusClass === "completed" ? "is-completed" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return `
-    <article class="task-row">
-      <div class="task-card ${statusClass === "blocked" ? "is-blocked" : ""} ${statusClass === "completed" ? "is-completed" : ""}">
+    <article class="task-row ${task.childIds.length ? "has-children" : ""}">
+      <div class="${nodeClasses}">
         <button
           class="tree-toggle ${task.childIds.length ? "" : "is-leaf"}"
           type="button"
@@ -146,7 +151,14 @@ function renderTask(task, indexes, filters, uiState, visibilityCache, t) {
           ${statusClass === "completed" ? "✓" : statusClass === "in_progress" ? "→" : statusClass === "discarded" ? "×" : statusClass === "blocked" ? "!" : "○"}
         </button>
 
-        <div class="task-main">
+        <button
+          class="task-main task-open"
+          type="button"
+          data-action="open-task-detail"
+          data-task-id="${task.id}"
+          aria-label="${escapeHtml(t("aria.openDetail"))}"
+          title="${escapeHtml(t("aria.openDetail"))}"
+        >
           <div class="task-title-row">
             <span class="task-title">${highlight(task.title, filters.search)}</span>
           </div>
@@ -155,42 +167,21 @@ function renderTask(task, indexes, filters, uiState, visibilityCache, t) {
             <span class="badge status-${statusClass}">${escapeHtml(statusLabel(t, statusClass))}</span>
             <span class="badge priority-${task.priority}">${escapeHtml(priorityLabel(t, task.priority))}</span>
             ${task.assignee ? `<span class="meta-pill">@ ${escapeHtml(task.assignee)}</span>` : ""}
-            ${task.childIds.length ? `<span class="meta-pill">${escapeHtml(t("count.subtask", { count: task.childIds.length }))}</span>` : ""}
+            ${task.assignee && task.assigneeActive === false ? `<span class="meta-pill">${escapeHtml(t("labels.inactive"))}</span>` : ""}
+            ${task.childIds.length ? `<span class="meta-pill">${escapeHtml(t("count.child", { count: task.childIds.length }))}</span>` : ""}
           </div>
+        </button>
 
-          ${task.description ? `<div class="task-description">${highlight(task.description, filters.search)}</div>` : ""}
-          ${task.notes ? `<div class="task-notes">${highlight(task.notes, filters.search)}</div>` : ""}
-
-          <div class="task-links">
-            <div class="task-meta-line">
-              <strong>${escapeHtml(t("task.structure"))}:</strong>
-              <span>${parent ? escapeHtml(t("task.childOf", { title: parent.title })) : escapeHtml(t("task.root"))}</span>
-            </div>
-
-            <div class="task-meta-line">
-              <strong>${escapeHtml(t("task.dependsOn"))}:</strong>
-              <span>${dependencyNames.length ? dependencyNames.map((name) => escapeHtml(name)).join(", ") : escapeHtml(t("task.noDependencies"))}</span>
-            </div>
-
-            ${blockedByNames.length ? `
-              <div class="task-meta-line">
-                <strong>${escapeHtml(t("task.blockedBy"))}:</strong>
-                <span>${blockedByNames.map((name) => escapeHtml(name)).join(", ")}</span>
-              </div>
-            ` : ""}
-
-            <div class="task-meta-line">
-              <strong>${escapeHtml(t("task.unlocks"))}:</strong>
-              <span>${unlockNames.length ? unlockNames.map((name) => escapeHtml(name)).join(", ") : escapeHtml(t("task.unlocksNone"))}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="task-actions">
-          <button class="button button-ghost" type="button" data-action="create-child-task" data-task-id="${task.id}">${escapeHtml(t("actions.subtask"))}</button>
-          <button class="button button-ghost" type="button" data-action="edit-task" data-task-id="${task.id}">${escapeHtml(t("actions.edit"))}</button>
-          <button class="button button-danger" type="button" data-action="delete-task" data-task-id="${task.id}">${escapeHtml(t("actions.delete"))}</button>
-        </div>
+        <button
+          class="icon-button detail-trigger"
+          type="button"
+          data-action="open-task-detail"
+          data-task-id="${task.id}"
+          aria-label="${escapeHtml(t("aria.openDetail"))}"
+          title="${escapeHtml(t("aria.openDetail"))}"
+        >
+          ⋯
+        </button>
       </div>
 
       ${visibleChildren.length ? `
@@ -241,13 +232,18 @@ export function renderMap(workspace, filters, uiState, t) {
     .map((phase) => {
       const categories = indexes.categoriesByPhase.get(phase.id) ?? [];
       const phaseTasks = workspace.tasks.filter((task) => task.phaseId === phase.id);
-      const completed = phaseTasks.filter((task) => task.effectiveStatus === "completed").length;
+      const rootPhaseTasks = phaseTasks.filter((task) => !task.parentTaskId);
+      const phaseSubtasks = phaseTasks.filter((task) => task.parentTaskId);
+      const completedRoots = rootPhaseTasks.filter((task) => task.effectiveStatus === "completed").length;
+      const completedSubtasks = phaseSubtasks.filter((task) => task.effectiveStatus === "completed").length;
       const phaseOpen = uiState.phaseOpen[phase.id] !== false;
 
       const categoriesHtml = categories
         .map((category) => {
           const categoryKey = `${phase.id}::${category.id}`;
           const tasksInCategory = (indexes.tasksByCategory.get(categoryKey) ?? []).filter((task) => !task.parentTaskId);
+          const allCategoryTasks = indexes.tasksByCategory.get(categoryKey) ?? [];
+          const descendantTasks = allCategoryTasks.filter((task) => task.parentTaskId);
           const visibleRoots = tasksInCategory.filter((task) => visibilityCache.get(task.id));
           const categoryOpen = uiState.categoryOpen[category.id] !== false;
 
@@ -258,23 +254,30 @@ export function renderMap(workspace, filters, uiState, t) {
           return `
             <article class="category-card">
               <header class="category-header">
-                <div class="category-header-main">
-                  <div class="category-title-row">
-                    <span class="category-title">${escapeHtml(category.name)}</span>
-                    <span class="meta-pill">${escapeHtml(t("count.task", { count: tasksInCategory.length }))}</span>
-                  </div>
-                </div>
+                <button class="tree-toggle" type="button" data-action="toggle-category" data-category-id="${category.id}" aria-label="${escapeHtml(t("aria.toggleCategory"))}" title="${escapeHtml(t("aria.toggleCategory"))}">
+                  ${categoryOpen ? "–" : "+"}
+                </button>
 
-                <div class="category-actions">
-                  <button class="icon-button" type="button" data-action="toggle-category" data-category-id="${category.id}" aria-label="${escapeHtml(t("aria.toggleCategory"))}" title="${escapeHtml(t("aria.toggleCategory"))}">
-                    ${categoryOpen ? "–" : "+"}
-                  </button>
-                  <button class="icon-button" type="button" data-action="move-category-up" data-category-id="${category.id}" aria-label="${escapeHtml(t("aria.moveUp"))}" title="${escapeHtml(t("aria.moveUp"))}">↑</button>
-                  <button class="icon-button" type="button" data-action="move-category-down" data-category-id="${category.id}" aria-label="${escapeHtml(t("aria.moveDown"))}" title="${escapeHtml(t("aria.moveDown"))}">↓</button>
-                  <button class="icon-button" type="button" data-action="edit-category" data-category-id="${category.id}" aria-label="${escapeHtml(t("aria.edit"))}" title="${escapeHtml(t("aria.edit"))}">✎</button>
-                  <button class="icon-button" type="button" data-action="create-task" data-phase-id="${phase.id}" data-category-id="${category.id}" aria-label="${escapeHtml(t("aria.create"))}" title="${escapeHtml(t("aria.create"))}">＋</button>
-                  <button class="icon-button" type="button" data-action="delete-category" data-category-id="${category.id}" aria-label="${escapeHtml(t("aria.delete"))}" title="${escapeHtml(t("aria.delete"))}">×</button>
-                </div>
+                <button
+                  class="section-open category-open"
+                  type="button"
+                  data-action="open-category-detail"
+                  data-category-id="${category.id}"
+                  aria-label="${escapeHtml(t("aria.openDetail"))}"
+                  title="${escapeHtml(t("aria.openDetail"))}"
+                >
+                  <div class="category-header-main">
+                    <div class="category-title-row">
+                      <span class="category-title">${escapeHtml(category.name)}</span>
+                      <span class="meta-pill">${escapeHtml(t("count.task", { count: tasksInCategory.length }))}</span>
+                      ${descendantTasks.length ? `<span class="meta-pill">${escapeHtml(t("count.subtask", { count: descendantTasks.length }))}</span>` : ""}
+                    </div>
+                  </div>
+                </button>
+
+                <button class="icon-button detail-trigger" type="button" data-action="open-category-detail" data-category-id="${category.id}" aria-label="${escapeHtml(t("aria.openDetail"))}" title="${escapeHtml(t("aria.openDetail"))}">
+                  ⋯
+                </button>
               </header>
 
               <div class="category-body ${categoryOpen ? "" : "is-hidden"}">
@@ -300,31 +303,45 @@ export function renderMap(workspace, filters, uiState, t) {
         return "";
       }
 
-      const phaseProgress = phaseTasks.length
-        ? t("phase.progressPercent", { percent: Math.round((completed / phaseTasks.length) * 100) })
+      const phaseProgress = rootPhaseTasks.length
+        ? t("phase.rootProgress", { done: completedRoots, total: rootPhaseTasks.length })
         : t("phase.progressEmpty");
+      const phaseSubtaskProgress = phaseSubtasks.length
+        ? t("phase.subtaskProgress", { done: completedSubtasks, total: phaseSubtasks.length })
+        : t("phase.subtaskEmpty");
 
       return `
         <section class="phase-card">
           <header class="phase-header">
-            <div class="phase-header-main">
-              <div class="phase-title-row">
-                <span class="phase-title">${escapeHtml(phase.name)}</span>
-                <span class="meta-pill">${escapeHtml(t("phase.completedRatio", { done: completed, total: phaseTasks.length || 0 }))}</span>
-              </div>
-              <div class="phase-progress">${escapeHtml(phaseProgress)}</div>
-            </div>
+            <button class="tree-toggle" type="button" data-action="toggle-phase" data-phase-id="${phase.id}" aria-label="${escapeHtml(t("aria.togglePhase"))}" title="${escapeHtml(t("aria.togglePhase"))}">
+              ${phaseOpen ? "–" : "+"}
+            </button>
 
-            <div class="phase-actions">
-              <button class="icon-button" type="button" data-action="toggle-phase" data-phase-id="${phase.id}" aria-label="${escapeHtml(t("aria.togglePhase"))}" title="${escapeHtml(t("aria.togglePhase"))}">
-                ${phaseOpen ? "–" : "+"}
-              </button>
-              <button class="icon-button" type="button" data-action="move-phase-up" data-phase-id="${phase.id}" aria-label="${escapeHtml(t("aria.moveUp"))}" title="${escapeHtml(t("aria.moveUp"))}">↑</button>
-              <button class="icon-button" type="button" data-action="move-phase-down" data-phase-id="${phase.id}" aria-label="${escapeHtml(t("aria.moveDown"))}" title="${escapeHtml(t("aria.moveDown"))}">↓</button>
-              <button class="icon-button" type="button" data-action="edit-phase" data-phase-id="${phase.id}" aria-label="${escapeHtml(t("aria.edit"))}" title="${escapeHtml(t("aria.edit"))}">✎</button>
-              <button class="icon-button" type="button" data-action="create-category" data-phase-id="${phase.id}" aria-label="${escapeHtml(t("aria.create"))}" title="${escapeHtml(t("aria.create"))}">＋</button>
-              <button class="icon-button" type="button" data-action="delete-phase" data-phase-id="${phase.id}" aria-label="${escapeHtml(t("aria.delete"))}" title="${escapeHtml(t("aria.delete"))}">×</button>
-            </div>
+            <button
+              class="section-open phase-open"
+              type="button"
+              data-action="open-phase-detail"
+              data-phase-id="${phase.id}"
+              aria-label="${escapeHtml(t("aria.openDetail"))}"
+              title="${escapeHtml(t("aria.openDetail"))}"
+            >
+              <div class="phase-header-main">
+                <div class="phase-title-row">
+                  <span class="phase-title">${escapeHtml(phase.name)}</span>
+                  <span class="meta-pill">${escapeHtml(t("count.category", { count: categories.length }))}</span>
+                  <span class="meta-pill">${escapeHtml(t("count.task", { count: rootPhaseTasks.length }))}</span>
+                  ${phaseSubtasks.length ? `<span class="meta-pill">${escapeHtml(t("count.subtask", { count: phaseSubtasks.length }))}</span>` : ""}
+                </div>
+                <div class="phase-progress-stack">
+                  <div class="phase-progress">${escapeHtml(phaseProgress)}</div>
+                  <div class="phase-progress phase-progress-secondary">${escapeHtml(phaseSubtaskProgress)}</div>
+                </div>
+              </div>
+            </button>
+
+            <button class="icon-button detail-trigger" type="button" data-action="open-phase-detail" data-phase-id="${phase.id}" aria-label="${escapeHtml(t("aria.openDetail"))}" title="${escapeHtml(t("aria.openDetail"))}">
+              ⋯
+            </button>
           </header>
 
           <div class="phase-body ${phaseOpen ? "" : "is-hidden"}">

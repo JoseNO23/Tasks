@@ -93,6 +93,26 @@ export function deleteCategory(categoryId) {
   });
 }
 
+export function createAssignee(name) {
+  return request("/api/assignees", {
+    method: "POST",
+    body: { name },
+  });
+}
+
+export function updateAssignee(assigneeId, payload) {
+  return request(`/api/assignees/${assigneeId}`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+export function deleteAssignee(assigneeId) {
+  return request(`/api/assignees/${assigneeId}`, {
+    method: "DELETE",
+  });
+}
+
 export function createTask(payload) {
   return request("/api/tasks", {
     method: "POST",

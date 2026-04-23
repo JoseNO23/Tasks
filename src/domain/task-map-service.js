@@ -40,6 +40,148 @@ function listDescendants(snapshot, rootId) {
   return descendants;
 }
 
+function hasIncompleteDescendants(snapshot, taskId) {
+  return listDescendants(snapshot, taskId).some((descendantId) => {
+    return ensureTaskExists(snapshot, descendantId).status !== "completed";
+  });
+}
+
+function normalizeCompletedHierarchy(snapshot) {
+  let changed = false;
+  for (const task of snapshot.tasks) {
+    if (task.status === "completed" && hasIncompleteDescendants(snapshot, task.id)) {
+      task.status = DEFAULTS.status;
+      task.updatedAt = nowIso();
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function normalizeBranchDependencyConflicts(snapshot) {
+  const taskById = new Map(snapshot.tasks.map((task) => [task.id, task]));
+  const childIdsByParent = new Map();
+  const ancestorCache = new Map();
+  const descendantCache = new Map();
+  let changed = false;
+
+  for (const task of snapshot.tasks) {
+    if (!task.parentTaskId) {
+      continue;
+    }
+    if (!childIdsByParent.has(task.parentTaskId)) {
+      childIdsByParent.set(task.parentTaskId, []);
+    }
+    childIdsByParent.get(task.parentTaskId).push(task.id);
+  }
+
+  function getAncestorIds(taskId) {
+    if (ancestorCache.has(taskId)) {
+      return ancestorCache.get(taskId);
+    }
+
+    const found = new Set();
+    let current = taskById.get(taskId);
+    while (current?.parentTaskId && !found.has(current.parentTaskId)) {
+      found.add(current.parentTaskId);
+      current = taskById.get(current.parentTaskId);
+    }
+
+    ancestorCache.set(taskId, found);
+    return found;
+  }
+
+  function getDescendantIds(taskId) {
+    if (descendantCache.has(taskId)) {
+      return descendantCache.get(taskId);
+    }
+
+    const found = new Set();
+    const queue = [...(childIdsByParent.get(taskId) ?? [])];
+
+    while (queue.length) {
+      const currentId = queue.shift();
+      found.add(currentId);
+      queue.push(...(childIdsByParent.get(currentId) ?? []));
+    }
+
+    descendantCache.set(taskId, found);
+    return found;
+  }
+
+  for (const task of snapshot.tasks) {
+    const dependencyIds = Array.isArray(task.dependencyIds) ? task.dependencyIds : [];
+    const ancestors = getAncestorIds(task.id);
+    const descendants = getDescendantIds(task.id);
+    const nextDependencyIds = dependencyIds.filter((dependencyId) => !ancestors.has(dependencyId) && !descendants.has(dependencyId));
+
+    if (nextDependencyIds.length !== dependencyIds.length) {
+      task.dependencyIds = nextDependencyIds;
+      task.updatedAt = nowIso();
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function normalizeLegacyAssignees(snapshot) {
+  snapshot.assignees = Array.isArray(snapshot.assignees) ? snapshot.assignees : [];
+  const assigneesByName = new Map();
+  let changed = false;
+
+  for (const assignee of snapshot.assignees) {
+    const normalizedName = typeof assignee.name === "string" ? assignee.name.trim().replace(/\s+/g, " ") : "";
+    if (!normalizedName) {
+      continue;
+    }
+    if (assignee.name !== normalizedName) {
+      assignee.name = normalizedName;
+      changed = true;
+    }
+    if (assignee.isActive === undefined) {
+      assignee.isActive = true;
+      changed = true;
+    }
+    assigneesByName.set(normalizedName.toLowerCase(), assignee);
+  }
+
+  for (const task of snapshot.tasks) {
+    const legacyName = typeof task.assignee === "string" ? task.assignee.trim().replace(/\s+/g, " ") : "";
+    if (!task.assigneeId && legacyName) {
+      let assignee = assigneesByName.get(legacyName.toLowerCase());
+      if (!assignee) {
+        assignee = {
+          id: createId("assignee"),
+          name: legacyName,
+          isActive: true,
+        };
+        snapshot.assignees.push(assignee);
+        assigneesByName.set(legacyName.toLowerCase(), assignee);
+      }
+      task.assigneeId = assignee.id;
+      changed = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(task, "assignee")) {
+      delete task.assignee;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function ensureTaskCanComplete(snapshot, taskId) {
+  const task = ensureTaskExists(snapshot, taskId);
+  if (hasIncompleteDescendants(snapshot, taskId)) {
+    throw new AppError(
+      400,
+      "incomplete_descendants",
+      `Task "${task.title}" cannot be completed until every descendant is completed.`,
+    );
+  }
+}
+
 function ensureTaskExists(snapshot, taskId) {
   const task = snapshot.tasks.find((item) => item.id === taskId);
   if (!task) {
@@ -64,8 +206,24 @@ function ensureCategoryExists(snapshot, categoryId) {
   return category;
 }
 
+function ensureAssigneeExists(snapshot, assigneeId) {
+  const assignee = snapshot.assignees.find((item) => item.id === assigneeId);
+  if (!assignee) {
+    throw new AppError(404, "assignee_not_found", "Assignee not found.");
+  }
+  return assignee;
+}
+
 function sanitizeName(name, label) {
   const value = typeof name === "string" ? name.trim() : "";
+  if (!value) {
+    throw new AppError(400, "invalid_name", `${label} is required.`);
+  }
+  return value;
+}
+
+function sanitizeCatalogName(name, label) {
+  const value = typeof name === "string" ? name.trim().replace(/\s+/g, " ") : "";
   if (!value) {
     throw new AppError(400, "invalid_name", `${label} is required.`);
   }
@@ -87,11 +245,11 @@ function sanitizeTaskPayload(input, options = {}) {
       phaseId: getInputValue(input, "phaseId", previous?.phaseId),
       categoryId: getInputValue(input, "categoryId", previous?.categoryId),
       parentTaskId: getInputValue(input, "parentTaskId", previous?.parentTaskId),
+      assigneeId: getInputValue(input, "assigneeId", previous?.assigneeId ?? null),
       dependencyIds: getInputValue(input, "dependencyIds", previous?.dependencyIds ?? []),
       status: getInputValue(input, "status", previous?.status ?? DEFAULTS.status),
       priority: getInputValue(input, "priority", previous?.priority ?? DEFAULTS.priority),
       notes: getInputValue(input, "notes", previous?.notes ?? ""),
-      assignee: getInputValue(input, "assignee", previous?.assignee ?? ""),
     },
     { now, previous },
   );
@@ -114,22 +272,24 @@ export class TaskMapService {
   }
 
   async getWorkspace() {
-    const snapshot = validateSnapshot(await this.store.read());
+    const snapshot = await this.#readValidSnapshot();
     return buildWorkspaceView(snapshot);
   }
 
   async exportSnapshot() {
-    return validateSnapshot(await this.store.read());
+    return this.#readValidSnapshot();
   }
 
   async importSnapshot(input) {
-    const nextSnapshot = validateSnapshot({
+    const nextSnapshot = {
       ...createEmptySnapshot(),
       ...input,
       savedAt: nowIso(),
-    });
-    await this.store.replace(nextSnapshot);
-    return buildWorkspaceView(nextSnapshot);
+    };
+    this.#repairLegacySnapshot(nextSnapshot);
+    const validSnapshot = validateSnapshot(nextSnapshot);
+    await this.store.replace(validSnapshot);
+    return buildWorkspaceView(validSnapshot);
   }
 
   async createPhase(input) {
@@ -231,6 +391,45 @@ export class TaskMapService {
     });
   }
 
+  async createAssignee(input) {
+    return this.#mutate((snapshot) => {
+      snapshot.assignees.push({
+        id: createId("assignee"),
+        name: sanitizeCatalogName(input.name, "Assignee name"),
+        isActive: true,
+      });
+      return snapshot;
+    });
+  }
+
+  async updateAssignee(assigneeId, input) {
+    return this.#mutate((snapshot) => {
+      const assignee = ensureAssigneeExists(snapshot, assigneeId);
+      if (Object.prototype.hasOwnProperty.call(input, "name")) {
+        assignee.name = sanitizeCatalogName(input.name ?? assignee.name, "Assignee name");
+      }
+      if (Object.prototype.hasOwnProperty.call(input, "isActive")) {
+        assignee.isActive = Boolean(input.isActive);
+      }
+      return snapshot;
+    });
+  }
+
+  async deleteAssignee(assigneeId) {
+    return this.#mutate((snapshot) => {
+      ensureAssigneeExists(snapshot, assigneeId);
+      if (snapshot.tasks.some((task) => task.assigneeId === assigneeId)) {
+        throw new AppError(
+          400,
+          "assignee_in_use",
+          "You cannot delete an assignee that is still used by tasks. Deactivate it instead.",
+        );
+      }
+      snapshot.assignees = snapshot.assignees.filter((assignee) => assignee.id !== assigneeId);
+      return snapshot;
+    });
+  }
+
   async updateTask(taskId, input) {
     return this.#mutate((snapshot) => {
       const task = ensureTaskExists(snapshot, taskId);
@@ -238,9 +437,12 @@ export class TaskMapService {
       const originalCategoryId = task.categoryId;
       const nextPhaseId = input.phaseId ?? task.phaseId;
       const nextCategoryId = input.categoryId ?? task.categoryId;
+      const nextParentTaskId = Object.prototype.hasOwnProperty.call(input, "parentTaskId")
+        ? input.parentTaskId
+        : task.parentTaskId;
 
-      if (task.parentTaskId) {
-        const parent = ensureTaskExists(snapshot, task.parentTaskId);
+      if (nextParentTaskId) {
+        const parent = ensureTaskExists(snapshot, nextParentTaskId);
         if (nextPhaseId !== parent.phaseId || nextCategoryId !== parent.categoryId) {
           throw new AppError(
             400,
@@ -251,6 +453,10 @@ export class TaskMapService {
       }
 
       Object.assign(task, sanitizeTaskPayload(input, { previous: task }));
+
+      if (task.status === "completed") {
+        ensureTaskCanComplete(snapshot, task.id);
+      }
 
       if ((nextPhaseId !== originalPhaseId || nextCategoryId !== originalCategoryId) && task.parentTaskId === null) {
         for (const descendantId of listDescendants(snapshot, taskId)) {
@@ -271,6 +477,9 @@ export class TaskMapService {
     }
 
     return this.#mutate((snapshot) => {
+      if (status === "completed") {
+        ensureTaskCanComplete(snapshot, taskId);
+      }
       const task = ensureTaskExists(snapshot, taskId);
       task.status = status;
       task.updatedAt = nowIso();
@@ -323,10 +532,32 @@ export class TaskMapService {
 
   async #mutate(mutator) {
     const snapshot = await this.store.update((draft) => {
+      this.#repairLegacySnapshot(draft);
       draft.savedAt = nowIso();
       const nextDraft = mutator(draft) ?? draft;
+      normalizeCompletedHierarchy(nextDraft);
       return validateSnapshot(nextDraft);
     });
     return buildWorkspaceView(snapshot);
+  }
+
+  #repairLegacySnapshot(snapshot) {
+    const assigneeRepair = normalizeLegacyAssignees(snapshot);
+    const dependencyRepair = normalizeBranchDependencyConflicts(snapshot);
+    const hierarchyRepair = normalizeCompletedHierarchy(snapshot);
+    if (assigneeRepair || dependencyRepair || hierarchyRepair) {
+      snapshot.savedAt = nowIso();
+    }
+    return assigneeRepair || dependencyRepair || hierarchyRepair;
+  }
+
+  async #readValidSnapshot() {
+    const snapshot = await this.store.read();
+    const changed = this.#repairLegacySnapshot(snapshot);
+    const validSnapshot = validateSnapshot(snapshot);
+    if (changed) {
+      await this.store.replace(validSnapshot);
+    }
+    return validSnapshot;
   }
 }

@@ -94,6 +94,27 @@ export function createApiRouter(service) {
   );
 
   router.post(
+    "/assignees",
+    asyncHandler(async (req, res) => {
+      res.status(201).json({ data: await service.createAssignee(req.body) });
+    }),
+  );
+
+  router.patch(
+    "/assignees/:assigneeId",
+    asyncHandler(async (req, res) => {
+      res.json({ data: await service.updateAssignee(req.params.assigneeId, req.body) });
+    }),
+  );
+
+  router.delete(
+    "/assignees/:assigneeId",
+    asyncHandler(async (req, res) => {
+      res.json({ data: await service.deleteAssignee(req.params.assigneeId) });
+    }),
+  );
+
+  router.post(
     "/tasks",
     asyncHandler(async (req, res) => {
       res.status(201).json({ data: await service.createTask(req.body) });

@@ -1,7 +1,9 @@
 import {
+  createAssignee,
   createCategory,
   createPhase,
   createTask,
+  deleteAssignee,
   deleteCategory,
   deletePhase,
   deleteTask,
@@ -11,6 +13,7 @@ import {
   moveCategory,
   movePhase,
   setTaskStatus,
+  updateAssignee,
   updateCategory,
   updatePhase,
   updateTask,
@@ -38,6 +41,7 @@ const STATUS_CYCLE = ["pending", "in_progress", "completed", "discarded"];
 function createEmptySnapshot() {
   return {
     version: 1,
+    assignees: [],
     phases: [],
     categories: [],
     tasks: [],
@@ -53,6 +57,12 @@ const refs = {
   priorityFilter: document.getElementById("priority-filter"),
   localeSwitch: document.getElementById("locale-switch"),
   importFile: document.getElementById("import-file"),
+  detailDialog: document.getElementById("detail-dialog"),
+  detailDialogEyebrow: document.getElementById("detail-dialog-eyebrow"),
+  detailDialogTitle: document.getElementById("detail-dialog-title"),
+  detailDialogSummary: document.getElementById("detail-dialog-summary"),
+  detailDialogBody: document.getElementById("detail-dialog-body"),
+  detailDialogActions: document.getElementById("detail-dialog-actions"),
   entityDialog: document.getElementById("entity-dialog"),
   entityForm: document.getElementById("entity-form"),
   entityDialogType: document.getElementById("entity-dialog-type"),
@@ -63,18 +73,31 @@ const refs = {
   taskDialog: document.getElementById("task-dialog"),
   taskForm: document.getElementById("task-form"),
   taskDialogTitle: document.getElementById("task-dialog-title"),
+  taskContextSection: document.getElementById("task-context-section"),
+  taskContextGrid: document.getElementById("task-context-grid"),
+  taskScopeSection: document.getElementById("task-scope-section"),
   taskTitleInput: document.getElementById("task-title-input"),
-  taskAssigneeInput: document.getElementById("task-assignee-input"),
+  taskAssigneeSelect: document.getElementById("task-assignee-select"),
   taskDescriptionInput: document.getElementById("task-description-input"),
   taskPhaseSelect: document.getElementById("task-phase-select"),
   taskCategorySelect: document.getElementById("task-category-select"),
-  taskParentSelect: document.getElementById("task-parent-select"),
-  taskStatusSelect: document.getElementById("task-status-select"),
   taskPrioritySelect: document.getElementById("task-priority-select"),
   taskNotesInput: document.getElementById("task-notes-input"),
   taskDependencySearch: document.getElementById("task-dependency-search"),
   taskDependencySelected: document.getElementById("task-dependency-selected"),
   taskDependencyOptions: document.getElementById("task-dependency-options"),
+  moveDialog: document.getElementById("move-dialog"),
+  moveForm: document.getElementById("move-form"),
+  moveDialogTitle: document.getElementById("move-dialog-title"),
+  moveCurrentContext: document.getElementById("move-current-context"),
+  movePhaseSelect: document.getElementById("move-phase-select"),
+  moveCategorySelect: document.getElementById("move-category-select"),
+  moveParentSelect: document.getElementById("move-parent-select"),
+  settingsDialog: document.getElementById("settings-dialog"),
+  assigneeForm: document.getElementById("assignee-form"),
+  assigneeFormLabel: document.getElementById("assignee-form-label"),
+  assigneeNameInput: document.getElementById("assignee-name-input"),
+  assigneeList: document.getElementById("assignee-list"),
   deleteDialog: document.getElementById("delete-dialog"),
   deleteForm: document.getElementById("delete-form"),
   deleteDialogEyebrow: document.getElementById("delete-dialog-eyebrow"),
@@ -111,8 +134,11 @@ const state = {
   translate: createTranslator(initialLocale),
   ui: loadUiState(),
   dialogs: {
+    detail: null,
     entity: null,
     task: null,
+    move: null,
+    settings: null,
     delete: null,
   },
 };
@@ -187,8 +213,195 @@ function findCategory(categoryId) {
   return state.workspace.categories.find((category) => category.id === categoryId) || null;
 }
 
+function findAssignee(assigneeId) {
+  return state.workspace.assignees.find((assignee) => assignee.id === assigneeId) || null;
+}
+
+function formatTaskNames(taskIds, fallbackKey = "task.none") {
+  const names = taskIds
+    .map((taskId) => findTask(taskId))
+    .filter(Boolean)
+    .map((task) => escapeHtml(task.title));
+
+  return names.length ? names.join(", ") : escapeHtml(t(fallbackKey));
+}
+
+function formatAssigneeLabel(assignee) {
+  if (!assignee) {
+    return t("labels.noAssignee");
+  }
+  return assignee.isActive === false ? `${assignee.name} (${t("labels.inactive")})` : assignee.name;
+}
+
+function renderDetailItem(label, value, options = {}) {
+  const content = value || escapeHtml(options.fallbackKey ? t(options.fallbackKey) : t("task.none"));
+  return `
+    <div class="detail-item ${options.wide ? "detail-item-wide" : ""}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${content}</strong>
+    </div>
+  `;
+}
+
+function renderContextItem(label, value, options = {}) {
+  return `
+    <div class="context-item ${options.wide ? "context-item-wide" : ""}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${value || escapeHtml(t(options.fallbackKey || "task.none"))}</strong>
+    </div>
+  `;
+}
+
+function buildTaskPath(taskId, options = {}) {
+  const labels = [];
+  let current = taskId ? findTask(taskId) : null;
+
+  while (current) {
+    labels.unshift(current.title);
+    current = current.parentTaskId ? findTask(current.parentTaskId) : null;
+  }
+
+  if (options.includeNewChildLabel) {
+    labels.push(t("task.newChildLabel"));
+  }
+
+  return labels.length ? labels.map((label) => escapeHtml(label)).join(" / ") : escapeHtml(t("task.root"));
+}
+
 function getPhaseCategories(phaseId) {
   return state.workspace.categories.filter((category) => category.phaseId === phaseId);
+}
+
+function getPhaseStats(phaseId) {
+  const categories = getPhaseCategories(phaseId);
+  const tasks = state.workspace.tasks.filter((task) => task.phaseId === phaseId);
+  const rootTasks = tasks.filter((task) => !task.parentTaskId);
+  const subtasks = tasks.filter((task) => task.parentTaskId);
+
+  return {
+    categories,
+    tasks,
+    rootTasks,
+    subtasks,
+    completedRoots: rootTasks.filter((task) => task.effectiveStatus === "completed").length,
+    completedSubtasks: subtasks.filter((task) => task.effectiveStatus === "completed").length,
+  };
+}
+
+function getCategoryStats(categoryId) {
+  const category = findCategory(categoryId);
+  const tasks = state.workspace.tasks.filter((task) => task.categoryId === categoryId);
+  const rootTasks = tasks.filter((task) => !task.parentTaskId);
+  const subtasks = tasks.filter((task) => task.parentTaskId);
+
+  return {
+    category,
+    phase: category ? findPhase(category.phaseId) : null,
+    tasks,
+    rootTasks,
+    subtasks,
+    completedRoots: rootTasks.filter((task) => task.effectiveStatus === "completed").length,
+    completedSubtasks: subtasks.filter((task) => task.effectiveStatus === "completed").length,
+  };
+}
+
+function renderDetailActions(actions) {
+  refs.detailDialogActions.innerHTML = actions
+    .map((action) => `
+      <button
+        class="button button-${action.variant ?? "ghost"} button-compact"
+        type="button"
+        data-action="${action.action}"
+        ${action.disabled ? "disabled" : ""}
+      >
+        ${escapeHtml(action.label)}
+      </button>
+    `)
+    .join("");
+}
+
+function buildAssigneeOptions(selectedAssigneeId = "") {
+  const selectedAssignee = selectedAssigneeId ? findAssignee(selectedAssigneeId) : null;
+  const options = [
+    `<option value="">${escapeHtml(t("labels.noAssignee"))}</option>`,
+    ...state.workspace.assignees
+      .filter((assignee) => assignee.isActive || assignee.id === selectedAssigneeId)
+      .map((assignee) => `<option value="${assignee.id}">${escapeHtml(formatAssigneeLabel(assignee))}</option>`),
+  ];
+
+  if (selectedAssigneeId && !selectedAssignee) {
+    options.push(`<option value="${selectedAssigneeId}">${escapeHtml(t("labels.noAssignee"))}</option>`);
+  }
+
+  return options.join("");
+}
+
+function syncTaskAssigneeOptions(selectedAssigneeId = "") {
+  refs.taskAssigneeSelect.innerHTML = buildAssigneeOptions(selectedAssigneeId);
+  refs.taskAssigneeSelect.value = selectedAssigneeId || "";
+}
+
+function syncSettingsDialog() {
+  if (!state.dialogs.settings) {
+    return;
+  }
+
+  const editor = state.dialogs.settings.editor;
+  const assignee = editor.id ? findAssignee(editor.id) : null;
+
+  refs.assigneeFormLabel.textContent = t(editor.mode === "edit" ? "settings.assigneeEdit" : "settings.assigneeNew");
+  refs.assigneeNameInput.value = assignee?.name ?? "";
+  refs.assigneeList.innerHTML = state.workspace.assignees.length
+    ? state.workspace.assignees
+        .map((item) => `
+          <article class="catalog-item ${item.isActive ? "" : "is-inactive"}">
+            <div class="catalog-item-main">
+              <div class="catalog-item-row">
+                <strong>${escapeHtml(item.name)}</strong>
+                <span class="badge ${item.isActive ? "" : "status-discarded"}">${escapeHtml(t(item.isActive ? "labels.active" : "labels.inactive"))}</span>
+                <span class="meta-pill">${escapeHtml(t("settings.usedBy", { count: item.usageCount }))}</span>
+              </div>
+            </div>
+            <div class="catalog-item-actions">
+              <button class="button button-ghost button-compact" type="button" data-action="edit-assignee" data-assignee-id="${item.id}">${escapeHtml(t("actions.edit"))}</button>
+              <button class="button button-ghost button-compact" type="button" data-action="toggle-assignee-active" data-assignee-id="${item.id}">
+                ${escapeHtml(t(item.isActive ? "actions.deactivate" : "actions.activate"))}
+              </button>
+              <button
+                class="button button-danger button-compact"
+                type="button"
+                data-action="delete-assignee"
+                data-assignee-id="${item.id}"
+                ${item.usageCount > 0 ? "disabled" : ""}
+                title="${escapeHtml(item.usageCount > 0 ? t("settings.deleteBlocked") : t("dialogs.detail.delete"))}"
+              >
+                ${escapeHtml(t("dialogs.detail.delete"))}
+              </button>
+            </div>
+          </article>
+        `)
+        .join("")
+    : `
+      <section class="empty-card catalog-empty">
+        <h3>${escapeHtml(t("empty.noAssigneesTitle"))}</h3>
+        <p>${escapeHtml(t("empty.noAssigneesBody"))}</p>
+      </section>
+    `;
+}
+
+function openSettingsDialog() {
+  if (!state.workspace) {
+    return;
+  }
+  state.dialogs.settings = {
+    editor: {
+      mode: "create",
+      id: null,
+    },
+  };
+  syncSettingsDialog();
+  refs.settingsDialog.showModal();
+  refs.assigneeNameInput.focus();
 }
 
 function normalizeOpenState() {
@@ -228,6 +441,7 @@ function render() {
   refs.priorityFilter.value = state.ui.filters.priority;
   refs.createCategoryButton.disabled = state.workspace.phases.length === 0;
   refs.createTaskButton.disabled = state.workspace.categories.length === 0;
+  syncOpenDialogCopy();
 }
 
 function showToast(message, type = "success") {
@@ -262,6 +476,265 @@ function closeDialog(dialog) {
   if (dialog.open) {
     dialog.close();
   }
+}
+
+function closeDetailDialog() {
+  closeDialog(refs.detailDialog);
+  state.dialogs.detail = null;
+}
+
+function closeSettingsDialog() {
+  closeDialog(refs.settingsDialog);
+  state.dialogs.settings = null;
+}
+
+function syncDetailDialog() {
+  const dialogState = state.dialogs.detail;
+  if (!dialogState) {
+    return;
+  }
+
+  if (dialogState.type === "task") {
+    const task = findTask(dialogState.id);
+    if (!task) {
+      closeDetailDialog();
+      return;
+    }
+
+    const parent = task.parentTaskId ? findTask(task.parentTaskId) : null;
+    const phase = findPhase(task.phaseId);
+    const category = findCategory(task.categoryId);
+    const assignee = task.assigneeId ? findAssignee(task.assigneeId) : null;
+
+    refs.detailDialogEyebrow.textContent = t("dialogs.detail.taskEyebrow");
+    refs.detailDialogTitle.textContent = task.title;
+    refs.detailDialogSummary.innerHTML = `
+      <div class="detail-summary-main">
+        <div class="detail-summary-row">
+          <span class="badge status-${task.effectiveStatus}">${escapeHtml(statusLabel(t, task.effectiveStatus))}</span>
+          <span class="badge priority-${task.priority}">${escapeHtml(priorityLabel(t, task.priority))}</span>
+          ${task.assignee ? `<span class="meta-pill">@ ${escapeHtml(task.assignee)}</span>` : ""}
+          ${assignee && assignee.isActive === false ? `<span class="meta-pill">${escapeHtml(t("labels.inactive"))}</span>` : ""}
+          ${task.childIds.length ? `<span class="meta-pill">${escapeHtml(t("count.child", { count: task.childIds.length }))}</span>` : ""}
+        </div>
+        ${task.description ? `<p class="detail-summary-copy">${escapeHtml(task.description)}</p>` : `<p class="detail-summary-copy">${escapeHtml(t("task.noDescription"))}</p>`}
+      </div>
+    `;
+
+    refs.detailDialogBody.innerHTML = `
+      ${renderDetailItem(t("fields.phase"), escapeHtml(phase?.name ?? t("labels.noPhase")))}
+      ${renderDetailItem(t("fields.category"), escapeHtml(category?.name ?? t("labels.noCategory")))}
+      ${renderDetailItem(t("fields.status"), escapeHtml(statusLabel(t, task.effectiveStatus)))}
+      ${renderDetailItem(t("fields.priority"), escapeHtml(priorityLabel(t, task.priority)))}
+      ${renderDetailItem(t("fields.assignee"), task.assignee ? escapeHtml(formatAssigneeLabel(assignee ?? { name: task.assignee, isActive: task.assigneeActive })) : "", { fallbackKey: "labels.noAssignee" })}
+      ${renderDetailItem(t("task.structure"), parent ? escapeHtml(t("task.childOf", { title: parent.title })) : escapeHtml(t("task.root")))}
+      ${renderDetailItem(t("fields.path"), buildTaskPath(task.id), { wide: true })}
+      ${renderDetailItem(t("task.directChildren"), task.childIds.length ? escapeHtml(t("count.child", { count: task.childIds.length })) : "", { fallbackKey: "task.none" })}
+      ${renderDetailItem(t("task.dependsOn"), formatTaskNames(task.dependencyIds, "task.noDependencies"), { wide: true })}
+      ${renderDetailItem(t("task.blockedBy"), formatTaskNames(task.blockedByIds, "task.noDependencies"), { wide: true })}
+      ${renderDetailItem(t("task.unlocks"), formatTaskNames(task.unlocksIds, "task.unlocksNone"), { wide: true })}
+      ${renderDetailItem(t("fields.notes"), task.notes ? escapeHtml(task.notes) : "", { wide: true, fallbackKey: "task.noNotes" })}
+    `;
+
+    renderDetailActions([
+      { action: "detail-add-child", label: t("actions.addChild") },
+      { action: "detail-move-task", label: t("actions.moveTask") },
+      { action: "detail-edit-task", label: t("dialogs.detail.edit") },
+      { action: "detail-delete-task", label: t("dialogs.detail.delete"), variant: "danger" },
+    ]);
+    return;
+  }
+
+  if (dialogState.type === "phase") {
+    const phase = findPhase(dialogState.id);
+    if (!phase) {
+      closeDetailDialog();
+      return;
+    }
+
+    const stats = getPhaseStats(phase.id);
+    const phaseIndex = state.workspace.phases.findIndex((item) => item.id === phase.id);
+    const canMoveUp = phaseIndex > 0;
+    const canMoveDown = phaseIndex < state.workspace.phases.length - 1;
+    const canDelete = stats.categories.length === 0 && stats.tasks.length === 0;
+    const rootProgress = stats.rootTasks.length
+      ? t("phase.rootProgress", { done: stats.completedRoots, total: stats.rootTasks.length })
+      : t("phase.progressEmpty");
+    const subtaskProgress = stats.subtasks.length
+      ? t("phase.subtaskProgress", { done: stats.completedSubtasks, total: stats.subtasks.length })
+      : t("phase.subtaskEmpty");
+
+    refs.detailDialogEyebrow.textContent = t("dialogs.detail.phaseEyebrow");
+    refs.detailDialogTitle.textContent = phase.name;
+    refs.detailDialogSummary.innerHTML = `
+      <div class="detail-summary-main">
+        <div class="detail-summary-row">
+          <span class="meta-pill">${escapeHtml(t("count.category", { count: stats.categories.length }))}</span>
+          <span class="meta-pill">${escapeHtml(t("count.task", { count: stats.rootTasks.length }))}</span>
+          <span class="meta-pill">${escapeHtml(t("count.subtask", { count: stats.subtasks.length }))}</span>
+        </div>
+        <p class="detail-summary-copy">${escapeHtml(rootProgress)} · ${escapeHtml(subtaskProgress)}</p>
+      </div>
+    `;
+
+    refs.detailDialogBody.innerHTML = `
+      ${renderDetailItem(t("fields.name"), escapeHtml(phase.name))}
+      ${renderDetailItem(t("fields.categories"), escapeHtml(t("count.category", { count: stats.categories.length })))}
+      ${renderDetailItem(t("fields.rootTasks"), escapeHtml(t("count.task", { count: stats.rootTasks.length })))}
+      ${renderDetailItem(t("fields.subtasks"), escapeHtml(t("count.subtask", { count: stats.subtasks.length })))}
+      ${renderDetailItem(t("fields.progress"), escapeHtml(rootProgress), { wide: true })}
+      ${renderDetailItem(t("fields.subtaskProgress"), escapeHtml(subtaskProgress), { wide: true })}
+    `;
+
+    renderDetailActions([
+      { action: "detail-create-category", label: t("actions.createCategory") },
+      { action: "detail-move-phase-up", label: t("actions.moveUp"), disabled: !canMoveUp },
+      { action: "detail-move-phase-down", label: t("actions.moveDown"), disabled: !canMoveDown },
+      { action: "detail-edit-phase", label: t("dialogs.detail.edit") },
+      { action: "detail-delete-phase", label: t("dialogs.detail.delete"), variant: "danger", disabled: !canDelete },
+    ]);
+    return;
+  }
+
+  if (dialogState.type === "category") {
+    const stats = getCategoryStats(dialogState.id);
+    if (!stats.category) {
+      closeDetailDialog();
+      return;
+    }
+
+    const siblings = state.workspace.categories.filter((item) => item.phaseId === stats.category.phaseId);
+    const categoryIndex = siblings.findIndex((item) => item.id === stats.category.id);
+    const canMoveUp = categoryIndex > 0;
+    const canMoveDown = categoryIndex < siblings.length - 1;
+    const canDelete = stats.tasks.length === 0;
+    const rootProgress = stats.rootTasks.length
+      ? t("phase.rootProgress", { done: stats.completedRoots, total: stats.rootTasks.length })
+      : t("phase.progressEmpty");
+    const subtaskProgress = stats.subtasks.length
+      ? t("phase.subtaskProgress", { done: stats.completedSubtasks, total: stats.subtasks.length })
+      : t("phase.subtaskEmpty");
+
+    refs.detailDialogEyebrow.textContent = t("dialogs.detail.categoryEyebrow");
+    refs.detailDialogTitle.textContent = stats.category.name;
+    refs.detailDialogSummary.innerHTML = `
+      <div class="detail-summary-main">
+        <div class="detail-summary-row">
+          ${stats.phase ? `<span class="meta-pill">${escapeHtml(stats.phase.name)}</span>` : ""}
+          <span class="meta-pill">${escapeHtml(t("count.task", { count: stats.rootTasks.length }))}</span>
+          <span class="meta-pill">${escapeHtml(t("count.subtask", { count: stats.subtasks.length }))}</span>
+        </div>
+        <p class="detail-summary-copy">${escapeHtml(rootProgress)} · ${escapeHtml(subtaskProgress)}</p>
+      </div>
+    `;
+
+    refs.detailDialogBody.innerHTML = `
+      ${renderDetailItem(t("fields.phase"), escapeHtml(stats.phase?.name ?? t("labels.noPhase")))}
+      ${renderDetailItem(t("fields.name"), escapeHtml(stats.category.name))}
+      ${renderDetailItem(t("fields.rootTasks"), escapeHtml(t("count.task", { count: stats.rootTasks.length })))}
+      ${renderDetailItem(t("fields.subtasks"), escapeHtml(t("count.subtask", { count: stats.subtasks.length })))}
+      ${renderDetailItem(t("fields.progress"), escapeHtml(rootProgress), { wide: true })}
+      ${renderDetailItem(t("fields.subtaskProgress"), escapeHtml(subtaskProgress), { wide: true })}
+    `;
+
+    renderDetailActions([
+      { action: "detail-create-task", label: t("actions.createTask") },
+      { action: "detail-move-category-up", label: t("actions.moveUp"), disabled: !canMoveUp },
+      { action: "detail-move-category-down", label: t("actions.moveDown"), disabled: !canMoveDown },
+      { action: "detail-edit-category", label: t("dialogs.detail.edit") },
+      { action: "detail-delete-category", label: t("dialogs.detail.delete"), variant: "danger", disabled: !canDelete },
+    ]);
+  }
+}
+
+function openDetailDialog(type, id) {
+  const exists = type === "task" ? findTask(id) : type === "phase" ? findPhase(id) : findCategory(id);
+  if (!exists) {
+    return;
+  }
+
+  state.dialogs.detail = { type, id };
+  syncDetailDialog();
+  if (!refs.detailDialog.open) {
+    refs.detailDialog.showModal();
+  }
+}
+
+function syncMoveDialogCopy() {
+  const dialogState = state.dialogs.move;
+  if (!dialogState) {
+    return;
+  }
+
+  const task = findTask(dialogState.taskId);
+  if (!task) {
+    closeDialog(refs.moveDialog);
+    state.dialogs.move = null;
+    return;
+  }
+
+  refs.moveDialogTitle.textContent = t("dialogs.move.title", { title: task.title });
+  refs.moveCurrentContext.innerHTML = [
+    renderContextItem(t("fields.phase"), escapeHtml(findPhase(task.phaseId)?.name ?? t("labels.noPhase"))),
+    renderContextItem(t("fields.category"), escapeHtml(findCategory(task.categoryId)?.name ?? t("labels.noCategory"))),
+    renderContextItem(t("fields.parent"), task.parentTaskId ? escapeHtml(findTask(task.parentTaskId)?.title ?? t("task.none")) : escapeHtml(t("task.root"))),
+    renderContextItem(t("fields.path"), buildTaskPath(task.id), { wide: true }),
+  ].join("");
+}
+
+function syncMoveDialogScopedOptions() {
+  const dialogState = state.dialogs.move;
+  if (!dialogState) {
+    return;
+  }
+
+  const selectedPhaseId = refs.movePhaseSelect.value;
+  const categories = getPhaseCategories(selectedPhaseId);
+  const selectedCategoryBefore = refs.moveCategorySelect.value || dialogState.categoryId;
+
+  refs.moveCategorySelect.innerHTML = categories.length
+    ? categories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")
+    : `<option value="">${escapeHtml(t("empty.noCategoriesTitle"))}</option>`;
+
+  refs.moveCategorySelect.value = categories.some((category) => category.id === selectedCategoryBefore)
+    ? selectedCategoryBefore
+    : categories[0]?.id ?? "";
+
+  const excludedParentIds = new Set([dialogState.taskId, ...collectDescendantIds(dialogState.taskId)]);
+  const parentOptions = state.workspace.tasks.filter((task) => (
+    task.phaseId === refs.movePhaseSelect.value
+    && task.categoryId === refs.moveCategorySelect.value
+    && !excludedParentIds.has(task.id)
+  ));
+
+  refs.moveParentSelect.innerHTML = [
+    `<option value="">${escapeHtml(t("placeholders.noParent"))}</option>`,
+    ...parentOptions.map((task) => `<option value="${task.id}">${escapeHtml(task.title)}</option>`),
+  ].join("");
+
+  refs.moveParentSelect.value = parentOptions.some((task) => task.id === dialogState.parentTaskId)
+    ? dialogState.parentTaskId
+    : "";
+}
+
+function openMoveDialog(taskId) {
+  const task = findTask(taskId);
+  if (!task) {
+    return;
+  }
+
+  state.dialogs.move = {
+    taskId,
+    phaseId: task.phaseId,
+    categoryId: task.categoryId,
+    parentTaskId: task.parentTaskId ?? "",
+  };
+
+  refs.movePhaseSelect.innerHTML = collectPhaseOptions();
+  refs.movePhaseSelect.value = task.phaseId;
+  syncMoveDialogCopy();
+  syncMoveDialogScopedOptions();
+  refs.moveDialog.showModal();
 }
 
 function syncEntityDialogCopy() {
@@ -356,7 +829,13 @@ function syncTaskDialogCopy() {
     return;
   }
 
-  refs.taskDialogTitle.textContent = t(dialogState.mode === "edit" ? "dialogs.task.edit" : "dialogs.task.new");
+  refs.taskDialogTitle.textContent = t(
+    dialogState.flow === "child"
+      ? "dialogs.task.addChild"
+      : dialogState.mode === "edit"
+        ? "dialogs.task.edit"
+        : "dialogs.task.new",
+  );
 }
 
 function collectDescendantIds(taskId) {
@@ -380,6 +859,39 @@ function collectDescendantIds(taskId) {
   return found;
 }
 
+function collectAncestorIds(taskId) {
+  const found = [];
+  let current = taskId ? findTask(taskId) : null;
+
+  while (current?.parentTaskId) {
+    found.push(current.parentTaskId);
+    current = findTask(current.parentTaskId);
+  }
+
+  return found;
+}
+
+function collectDisallowedDependencyIds(dialogState) {
+  const disallowed = new Set();
+
+  if (dialogState.mode === "edit" && dialogState.taskId) {
+    disallowed.add(dialogState.taskId);
+    collectAncestorIds(dialogState.taskId).forEach((taskId) => disallowed.add(taskId));
+    collectDescendantIds(dialogState.taskId).forEach((taskId) => disallowed.add(taskId));
+    return disallowed;
+  }
+
+  if (dialogState.flow === "child" && dialogState.context.parentTaskId) {
+    let current = dialogState.context.parentTaskId;
+    while (current) {
+      disallowed.add(current);
+      current = findTask(current)?.parentTaskId ?? null;
+    }
+  }
+
+  return disallowed;
+}
+
 function openTaskDialog(config = {}) {
   if (state.workspace.phases.length === 0 || state.workspace.categories.length === 0) {
     showToastKey("toasts.needPhaseAndCategory", "error");
@@ -392,28 +904,35 @@ function openTaskDialog(config = {}) {
   const firstCategory = getFirstCategory();
   const fallbackPhaseId = defaults.phaseId ?? task?.phaseId ?? firstPhaseWithCategories?.id ?? "";
   const fallbackCategoryId = defaults.categoryId ?? task?.categoryId ?? firstCategory?.id ?? "";
+  const flow = task ? "edit" : defaults.parentTaskId ? "child" : "root";
+  const parentTaskId = task?.parentTaskId ?? defaults.parentTaskId ?? null;
+  const lockedDependencyIds = [...new Set(defaults.lockedDependencyIds ?? [])];
+  const dependencyIds = [...new Set([...(task?.dependencyIds ?? defaults.dependencyIds ?? []), ...lockedDependencyIds])];
 
   state.dialogs.task = {
     mode: task ? "edit" : "create",
+    flow,
     taskId: task?.id ?? null,
-    dependencyIds: [...(task?.dependencyIds ?? defaults.dependencyIds ?? [])],
+    dependencyIds,
+    lockedDependencyIds,
     dependencyFilter: "",
-    defaults: {
+    context: {
       phaseId: fallbackPhaseId,
       categoryId: fallbackCategoryId,
-      parentTaskId: defaults.parentTaskId ?? task?.parentTaskId ?? "",
+      parentTaskId,
     },
   };
 
   refs.taskTitleInput.value = task?.title ?? "";
-  refs.taskAssigneeInput.value = task?.assignee ?? "";
+  syncTaskAssigneeOptions(task?.assigneeId ?? defaults.assigneeId ?? "");
   refs.taskDescriptionInput.value = task?.description ?? "";
-  refs.taskStatusSelect.value = task?.status ?? "pending";
   refs.taskPrioritySelect.value = task?.priority ?? "medium";
   refs.taskNotesInput.value = task?.notes ?? "";
   refs.taskDependencySearch.value = "";
   refs.taskPhaseSelect.innerHTML = collectPhaseOptions();
   refs.taskPhaseSelect.value = fallbackPhaseId;
+  refs.taskContextSection.classList.toggle("is-hidden", flow === "root");
+  refs.taskScopeSection.classList.toggle("is-hidden", flow !== "root");
 
   syncTaskDialogCopy();
   syncTaskDialogScopedOptions();
@@ -427,9 +946,11 @@ function syncTaskDialogScopedOptions() {
     return;
   }
 
-  const selectedPhaseId = refs.taskPhaseSelect.value;
+  const selectedPhaseId = dialogState.flow === "root" ? refs.taskPhaseSelect.value : dialogState.context.phaseId;
   const categories = getPhaseCategories(selectedPhaseId);
-  const selectedCategoryBefore = refs.taskCategorySelect.value || dialogState.defaults.categoryId;
+  const selectedCategoryBefore = dialogState.flow === "root"
+    ? (refs.taskCategorySelect.value || dialogState.context.categoryId)
+    : dialogState.context.categoryId;
 
   refs.taskCategorySelect.innerHTML = categories.length
     ? categories
@@ -437,25 +958,40 @@ function syncTaskDialogScopedOptions() {
         .join("")
     : `<option value="">${escapeHtml(t("empty.noCategoriesTitle"))}</option>`;
 
-  refs.taskCategorySelect.value = categories.some((category) => category.id === selectedCategoryBefore)
+  const resolvedCategoryId = categories.some((category) => category.id === selectedCategoryBefore)
     ? selectedCategoryBefore
     : categories[0]?.id ?? "";
 
-  const currentTaskId = dialogState.taskId;
-  const excludedParentIds = new Set([currentTaskId, ...collectDescendantIds(currentTaskId)].filter(Boolean));
-  const selectedParentBefore = refs.taskParentSelect.value || dialogState.defaults.parentTaskId || "";
-  const parentOptions = state.workspace.tasks.filter((task) => (
-    task.phaseId === selectedPhaseId
-    && task.categoryId === refs.taskCategorySelect.value
-    && !excludedParentIds.has(task.id)
-  ));
+  refs.taskCategorySelect.value = resolvedCategoryId;
+  if (dialogState.flow === "root") {
+    dialogState.context.phaseId = selectedPhaseId;
+    dialogState.context.categoryId = resolvedCategoryId;
+    dialogState.context.parentTaskId = null;
+  }
 
-  refs.taskParentSelect.innerHTML = [
-    `<option value="">${escapeHtml(t("placeholders.noParent"))}</option>`,
-    ...parentOptions.map((task) => `<option value="${task.id}">${escapeHtml(task.title)}</option>`),
-  ].join("");
-
-  refs.taskParentSelect.value = parentOptions.some((task) => task.id === selectedParentBefore) ? selectedParentBefore : "";
+  refs.taskContextGrid.innerHTML = dialogState.flow === "root"
+    ? ""
+    : [
+        renderContextItem(t("fields.phase"), escapeHtml(findPhase(dialogState.context.phaseId)?.name ?? t("labels.noPhase"))),
+        renderContextItem(t("fields.category"), escapeHtml(findCategory(dialogState.context.categoryId)?.name ?? t("labels.noCategory"))),
+        renderContextItem(
+          t("fields.parent"),
+          dialogState.context.parentTaskId
+            ? escapeHtml(findTask(dialogState.context.parentTaskId)?.title ?? t("task.none"))
+            : escapeHtml(t("task.root")),
+        ),
+        renderContextItem(
+          t("fields.path"),
+          buildTaskPath(dialogState.flow === "edit" ? dialogState.taskId : dialogState.context.parentTaskId, {
+            includeNewChildLabel: dialogState.flow === "child",
+          }),
+          { wide: true },
+        ),
+        ...(dialogState.lockedDependencyIds.length
+          ? [renderContextItem(t("fields.inheritedDependency"), formatTaskNames(dialogState.lockedDependencyIds), { wide: true })]
+          : []),
+      ].join("");
+  syncTaskAssigneeOptions(refs.taskAssigneeSelect.value);
   renderDependencyOptions();
 }
 
@@ -486,9 +1022,11 @@ function renderDependencyOptions() {
   const currentTaskId = dialogState.taskId;
   const filterValue = dialogState.dependencyFilter.trim().toLowerCase();
   const selectedIds = new Set(dialogState.dependencyIds);
+  const lockedIds = new Set(dialogState.lockedDependencyIds);
+  const disallowedIds = collectDisallowedDependencyIds(dialogState);
   const tasks = sortTasksForPicker(
     state.workspace.tasks.filter((task) => {
-      if (task.id === currentTaskId) {
+      if (task.id === currentTaskId || disallowedIds.has(task.id)) {
         return false;
       }
       if (!filterValue) {
@@ -505,7 +1043,7 @@ function renderDependencyOptions() {
     ? dialogState.dependencyIds
         .map((taskId) => findTask(taskId))
         .filter(Boolean)
-        .map((task) => `<span class="chip">${escapeHtml(task.title)}</span>`)
+        .map((task) => `<span class="chip ${lockedIds.has(task.id) ? "chip-locked" : ""}">${escapeHtml(task.title)}</span>`)
         .join("")
     : `<span class="task-supporting">${escapeHtml(t("dependency.noneSelected"))}</span>`;
 
@@ -516,10 +1054,10 @@ function renderDependencyOptions() {
           const category = findCategory(task.categoryId);
           return `
             <label class="dependency-option">
-              <input type="checkbox" value="${task.id}" ${selectedIds.has(task.id) ? "checked" : ""} />
+              <input type="checkbox" value="${task.id}" ${selectedIds.has(task.id) ? "checked" : ""} ${lockedIds.has(task.id) ? "disabled" : ""} />
               <span>
                 <strong>${escapeHtml(task.title)}</strong>
-                <small>${escapeHtml(phase?.name ?? t("labels.noPhase"))} / ${escapeHtml(category?.name ?? t("labels.noCategory"))} · ${escapeHtml(statusLabel(t, task.effectiveStatus))} · ${escapeHtml(priorityLabel(t, task.priority))}</small>
+                <small>${escapeHtml(phase?.name ?? t("labels.noPhase"))} / ${escapeHtml(category?.name ?? t("labels.noCategory"))} · ${escapeHtml(statusLabel(t, task.effectiveStatus))} · ${escapeHtml(priorityLabel(t, task.priority))}${lockedIds.has(task.id) ? ` · ${escapeHtml(t("labels.inherited"))}` : ""}</small>
               </span>
             </label>
           `;
@@ -548,25 +1086,30 @@ async function handleTaskSubmit(event) {
 
   const payload = {
     title,
-    assignee: refs.taskAssigneeInput.value.trim(),
+    assigneeId: refs.taskAssigneeSelect.value || null,
     description: refs.taskDescriptionInput.value.trim(),
-    phaseId: refs.taskPhaseSelect.value,
-    categoryId: refs.taskCategorySelect.value,
-    parentTaskId: refs.taskParentSelect.value || null,
-    status: refs.taskStatusSelect.value,
     priority: refs.taskPrioritySelect.value,
     notes: refs.taskNotesInput.value.trim(),
     dependencyIds: dialogState.dependencyIds,
   };
 
+  if (dialogState.mode === "create") {
+    payload.phaseId = dialogState.flow === "root" ? refs.taskPhaseSelect.value : dialogState.context.phaseId;
+    payload.categoryId = dialogState.flow === "root" ? refs.taskCategorySelect.value : dialogState.context.categoryId;
+    payload.parentTaskId = dialogState.flow === "child" ? dialogState.context.parentTaskId : null;
+  }
+
   const ok = await performMutation(
     () => (dialogState.mode === "edit" ? updateTask(dialogState.taskId, payload) : createTask(payload)),
     dialogState.mode === "edit" ? "toasts.taskUpdated" : "toasts.taskCreated",
     () => {
-      state.ui.phaseOpen[payload.phaseId] = true;
-      state.ui.categoryOpen[payload.categoryId] = true;
-      if (payload.parentTaskId) {
-        state.ui.taskOpen[payload.parentTaskId] = true;
+      const phaseId = dialogState.mode === "edit" ? dialogState.context.phaseId : payload.phaseId;
+      const categoryId = dialogState.mode === "edit" ? dialogState.context.categoryId : payload.categoryId;
+      const parentTaskId = dialogState.mode === "edit" ? dialogState.context.parentTaskId : payload.parentTaskId;
+      state.ui.phaseOpen[phaseId] = true;
+      state.ui.categoryOpen[categoryId] = true;
+      if (parentTaskId) {
+        state.ui.taskOpen[parentTaskId] = true;
       }
     },
   );
@@ -574,6 +1117,38 @@ async function handleTaskSubmit(event) {
   if (ok) {
     closeDialog(refs.taskDialog);
     state.dialogs.task = null;
+  }
+}
+
+async function handleAssigneeSubmit(event) {
+  event.preventDefault();
+  if (!state.dialogs.settings) {
+    return;
+  }
+
+  const name = refs.assigneeNameInput.value.trim().replace(/\s+/g, " ");
+  if (!name) {
+    showToastKey("toasts.assigneeNameRequired", "error");
+    return;
+  }
+
+  const editor = state.dialogs.settings.editor;
+  const ok = await performMutation(
+    () => (
+      editor.mode === "edit" && editor.id
+        ? updateAssignee(editor.id, { name })
+        : createAssignee(name)
+    ),
+    editor.mode === "edit" ? "toasts.assigneeUpdated" : "toasts.assigneeCreated",
+  );
+
+  if (ok && state.dialogs.settings) {
+    state.dialogs.settings.editor = { mode: "create", id: null };
+    syncSettingsDialog();
+    if (state.dialogs.task) {
+      syncTaskAssigneeOptions(refs.taskAssigneeSelect.value);
+    }
+    refs.assigneeNameInput.focus();
   }
 }
 
@@ -659,6 +1234,35 @@ async function handleDeleteSubmit(event) {
   }
 }
 
+async function handleMoveSubmit(event) {
+  event.preventDefault();
+  const dialogState = state.dialogs.move;
+  if (!dialogState) {
+    return;
+  }
+
+  const ok = await performMutation(
+    () => updateTask(dialogState.taskId, {
+      phaseId: refs.movePhaseSelect.value,
+      categoryId: refs.moveCategorySelect.value,
+      parentTaskId: refs.moveParentSelect.value || null,
+    }),
+    "toasts.taskMoved",
+    () => {
+      state.ui.phaseOpen[refs.movePhaseSelect.value] = true;
+      state.ui.categoryOpen[refs.moveCategorySelect.value] = true;
+      if (refs.moveParentSelect.value) {
+        state.ui.taskOpen[refs.moveParentSelect.value] = true;
+      }
+    },
+  );
+
+  if (ok) {
+    closeDialog(refs.moveDialog);
+    state.dialogs.move = null;
+  }
+}
+
 async function handleStatusCycle(taskId) {
   const task = findTask(taskId);
   if (!task) {
@@ -709,6 +1313,9 @@ async function handleDocumentClick(event) {
   const taskId = actionTarget.dataset.taskId;
 
   switch (action) {
+    case "open-settings":
+      openSettingsDialog();
+      break;
     case "create-phase":
       openEntityDialog({ type: "phase", mode: "create" });
       break;
@@ -736,6 +1343,15 @@ async function handleDocumentClick(event) {
       });
       break;
     }
+    case "open-task-detail":
+      openDetailDialog("task", taskId);
+      break;
+    case "open-phase-detail":
+      openDetailDialog("phase", phaseId);
+      break;
+    case "open-category-detail":
+      openDetailDialog("category", categoryId);
+      break;
     case "edit-phase":
       openEntityDialog({ type: "phase", mode: "edit", id: phaseId });
       break;
@@ -743,6 +1359,7 @@ async function handleDocumentClick(event) {
       openEntityDialog({ type: "category", mode: "edit", id: categoryId });
       break;
     case "edit-task":
+      closeDetailDialog();
       openTaskDialog({ taskId });
       break;
     case "move-phase-up":
@@ -770,6 +1387,7 @@ async function handleDocumentClick(event) {
       await performMutation(() => deleteCategory(categoryId), "toasts.categoryDeleted");
       break;
     case "delete-task":
+      closeDetailDialog();
       openDeleteDialog(taskId);
       break;
     case "toggle-phase":
@@ -809,9 +1427,200 @@ async function handleDocumentClick(event) {
       closeDialog(refs.entityDialog);
       state.dialogs.entity = null;
       break;
+    case "close-detail-dialog":
+      closeDetailDialog();
+      break;
+    case "close-settings-dialog":
+      closeSettingsDialog();
+      break;
+    case "cancel-assignee-edit":
+      if (!state.dialogs.settings) {
+        return;
+      }
+      state.dialogs.settings.editor = { mode: "create", id: null };
+      syncSettingsDialog();
+      break;
+    case "edit-assignee":
+      if (!state.dialogs.settings) {
+        return;
+      }
+      state.dialogs.settings.editor = { mode: "edit", id: actionTarget.dataset.assigneeId };
+      syncSettingsDialog();
+      refs.assigneeNameInput.focus();
+      break;
+    case "toggle-assignee-active": {
+      const assigneeId = actionTarget.dataset.assigneeId;
+      const assignee = findAssignee(assigneeId);
+      if (!assignee) {
+        return;
+      }
+      await performMutation(
+        () => updateAssignee(assigneeId, { isActive: !assignee.isActive }),
+        assignee.isActive ? "toasts.assigneeDeactivated" : "toasts.assigneeActivated",
+      );
+      if (state.dialogs.task) {
+        syncTaskAssigneeOptions(refs.taskAssigneeSelect.value);
+      }
+      break;
+    }
+    case "delete-assignee":
+      await performMutation(
+        () => deleteAssignee(actionTarget.dataset.assigneeId),
+        "toasts.assigneeDeleted",
+      );
+      if (state.dialogs.settings) {
+        state.dialogs.settings.editor = { mode: "create", id: null };
+        syncSettingsDialog();
+      }
+      if (state.dialogs.task) {
+        syncTaskAssigneeOptions(refs.taskAssigneeSelect.value);
+      }
+      break;
+    case "detail-create-category": {
+      if (state.dialogs.detail?.type !== "phase") {
+        return;
+      }
+      const currentPhaseId = state.dialogs.detail.id;
+      closeDetailDialog();
+      openEntityDialog({ type: "category", mode: "create", phaseId: currentPhaseId });
+      break;
+    }
+    case "detail-create-task": {
+      if (state.dialogs.detail?.type !== "category") {
+        return;
+      }
+      const currentCategoryId = state.dialogs.detail.id;
+      const category = findCategory(currentCategoryId);
+      if (!category) {
+        return;
+      }
+      closeDetailDialog();
+      openTaskDialog({ defaults: { phaseId: category.phaseId, categoryId: currentCategoryId } });
+      break;
+    }
+    case "detail-edit-phase":
+      if (state.dialogs.detail?.type !== "phase") {
+        return;
+      }
+      {
+        const currentPhaseId = state.dialogs.detail.id;
+        closeDetailDialog();
+        openEntityDialog({ type: "phase", mode: "edit", id: currentPhaseId });
+      }
+      break;
+    case "detail-edit-category":
+      if (state.dialogs.detail?.type !== "category") {
+        return;
+      }
+      {
+        const currentCategoryId = state.dialogs.detail.id;
+        closeDetailDialog();
+        openEntityDialog({ type: "category", mode: "edit", id: currentCategoryId });
+      }
+      break;
+    case "detail-move-phase-up":
+      if (state.dialogs.detail?.type !== "phase") {
+        return;
+      }
+      await performMutation(() => movePhase(state.dialogs.detail.id, "up"), "toasts.phaseReordered");
+      break;
+    case "detail-move-phase-down":
+      if (state.dialogs.detail?.type !== "phase") {
+        return;
+      }
+      await performMutation(() => movePhase(state.dialogs.detail.id, "down"), "toasts.phaseReordered");
+      break;
+    case "detail-move-category-up":
+      if (state.dialogs.detail?.type !== "category") {
+        return;
+      }
+      await performMutation(() => moveCategory(state.dialogs.detail.id, "up"), "toasts.categoryReordered");
+      break;
+    case "detail-move-category-down":
+      if (state.dialogs.detail?.type !== "category") {
+        return;
+      }
+      await performMutation(() => moveCategory(state.dialogs.detail.id, "down"), "toasts.categoryReordered");
+      break;
+    case "detail-delete-phase":
+      if (state.dialogs.detail?.type !== "phase") {
+        return;
+      }
+      if (!confirmWithBrowser("confirms.deleteEmptyPhase")) {
+        return;
+      }
+      await performMutation(() => deletePhase(state.dialogs.detail.id), "toasts.phaseDeleted");
+      break;
+    case "detail-delete-category":
+      if (state.dialogs.detail?.type !== "category") {
+        return;
+      }
+      if (!confirmWithBrowser("confirms.deleteEmptyCategory")) {
+        return;
+      }
+      await performMutation(() => deleteCategory(state.dialogs.detail.id), "toasts.categoryDeleted");
+      break;
+    case "detail-add-child": {
+      if (state.dialogs.detail?.type !== "task") {
+        return;
+      }
+      const parent = findTask(state.dialogs.detail.id);
+      if (!parent) {
+        return;
+      }
+      closeDetailDialog();
+      openTaskDialog({
+        defaults: {
+          phaseId: parent.phaseId,
+          categoryId: parent.categoryId,
+          parentTaskId: parent.id,
+        },
+      });
+      break;
+    }
+    case "detail-edit-task": {
+      if (state.dialogs.detail?.type !== "task") {
+        return;
+      }
+      const currentTaskId = state.dialogs.detail.id;
+      if (!currentTaskId) {
+        return;
+      }
+      closeDetailDialog();
+      openTaskDialog({ taskId: currentTaskId });
+      break;
+    }
+    case "detail-move-task": {
+      if (state.dialogs.detail?.type !== "task") {
+        return;
+      }
+      const currentTaskId = state.dialogs.detail.id;
+      if (!currentTaskId) {
+        return;
+      }
+      closeDetailDialog();
+      openMoveDialog(currentTaskId);
+      break;
+    }
+    case "detail-delete-task": {
+      if (state.dialogs.detail?.type !== "task") {
+        return;
+      }
+      const currentTaskId = state.dialogs.detail.id;
+      if (!currentTaskId) {
+        return;
+      }
+      closeDetailDialog();
+      openDeleteDialog(currentTaskId);
+      break;
+    }
     case "close-task-dialog":
       closeDialog(refs.taskDialog);
       state.dialogs.task = null;
+      break;
+    case "close-move-dialog":
+      closeDialog(refs.moveDialog);
+      state.dialogs.move = null;
       break;
     case "close-delete-dialog":
       closeDialog(refs.deleteDialog);
@@ -880,6 +1689,11 @@ function handleDependencyListChange(event) {
     return;
   }
 
+  if (state.dialogs.task.lockedDependencyIds.includes(checkbox.value)) {
+    checkbox.checked = true;
+    return;
+  }
+
   const current = new Set(state.dialogs.task.dependencyIds);
   if (checkbox.checked) {
     current.add(checkbox.value);
@@ -892,11 +1706,17 @@ function handleDependencyListChange(event) {
 }
 
 function syncOpenDialogCopy() {
+  syncDetailDialog();
   syncEntityDialogCopy();
   if (state.dialogs.task) {
     syncTaskDialogCopy();
     syncTaskDialogScopedOptions();
   }
+  if (state.dialogs.move) {
+    syncMoveDialogCopy();
+    syncMoveDialogScopedOptions();
+  }
+  syncSettingsDialog();
   syncDeleteDialogCopy();
 }
 
@@ -928,10 +1748,17 @@ async function init() {
 
   refs.entityForm.addEventListener("submit", handleEntitySubmit);
   refs.taskForm.addEventListener("submit", handleTaskSubmit);
+  refs.moveForm.addEventListener("submit", handleMoveSubmit);
+  refs.assigneeForm.addEventListener("submit", handleAssigneeSubmit);
   refs.deleteForm.addEventListener("submit", handleDeleteSubmit);
+  refs.settingsDialog.addEventListener("close", () => {
+    state.dialogs.settings = null;
+  });
   refs.importFile.addEventListener("change", handleImportFile);
   refs.taskPhaseSelect.addEventListener("change", syncTaskDialogScopedOptions);
   refs.taskCategorySelect.addEventListener("change", syncTaskDialogScopedOptions);
+  refs.movePhaseSelect.addEventListener("change", syncMoveDialogScopedOptions);
+  refs.moveCategorySelect.addEventListener("change", syncMoveDialogScopedOptions);
   refs.taskDependencySearch.addEventListener("input", () => {
     if (!state.dialogs.task) {
       return;

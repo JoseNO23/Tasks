@@ -19,6 +19,7 @@
         </div>
 
         <div class="header-actions">
+          <button class="button button-ghost button-compact" type="button" data-action="open-settings" data-i18n="actions.settings">Settings</button>
           <button class="button button-ghost button-compact" type="button" data-action="export-json" data-i18n="actions.export">Export</button>
           <button class="button button-ghost button-compact" type="button" data-action="import-json" data-i18n="actions.import">Import</button>
           <button class="button button-ghost button-compact button-reset" type="button" data-action="reset-workspace" data-i18n="actions.reset">Reset</button>
@@ -27,14 +28,6 @@
 
       <section class="toolbar">
         <div class="toolbar-group toolbar-group-primary">
-          <label class="field field-compact language-switch">
-            <span data-i18n="locale.label">Language</span>
-            <select id="locale-switch" aria-label="Language">
-              <option value="en">English</option>
-              <option value="es">Español</option>
-            </select>
-          </label>
-
           <button class="button button-ghost" id="create-phase-button" type="button" data-action="create-phase" data-i18n="actions.createPhase">New phase</button>
           <button class="button button-ghost" id="create-category-button" type="button" data-action="create-category" data-i18n="actions.createCategory">New category</button>
           <button class="button button-primary" id="create-task-button" type="button" data-action="create-task" data-i18n="actions.createTask">New task</button>
@@ -89,6 +82,25 @@
 
     <input id="import-file" type="file" accept="application/json" hidden />
 
+    <dialog id="detail-dialog" class="dialog dialog-wide">
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow" id="detail-dialog-eyebrow">Detail</p>
+            <h3 id="detail-dialog-title">TASKS</h3>
+          </div>
+          <button class="icon-button" type="button" data-action="close-detail-dialog" data-i18n-aria-label="aria.close" aria-label="Close">×</button>
+        </div>
+
+        <div class="dialog-body">
+          <div id="detail-dialog-summary" class="detail-summary"></div>
+          <div id="detail-dialog-body" class="detail-grid"></div>
+        </div>
+
+        <div id="detail-dialog-actions" class="dialog-footer"></div>
+      </div>
+    </dialog>
+
     <dialog id="entity-dialog" class="dialog">
       <form id="entity-form" class="dialog-form" method="dialog">
         <div class="dialog-header">
@@ -129,6 +141,36 @@
         </div>
 
         <div class="dialog-body">
+          <section id="task-context-section" class="dialog-section is-hidden">
+            <div class="section-heading">
+              <h4 data-i18n="sections.inheritedContext">Inherited context</h4>
+              <p data-i18n="sections.inheritedContextHelp">This context comes from the node origin and cannot be changed here.</p>
+            </div>
+            <div id="task-context-grid" class="context-grid"></div>
+          </section>
+
+          <section id="task-scope-section" class="dialog-section">
+            <div class="section-heading">
+              <h4 data-i18n="sections.scope">Task scope</h4>
+            </div>
+            <div class="grid two-columns">
+              <label class="field">
+                <span data-i18n="fields.phase">Phase</span>
+                <select id="task-phase-select" required></select>
+              </label>
+
+              <label class="field">
+                <span data-i18n="fields.category">Category</span>
+                <select id="task-category-select" required></select>
+              </label>
+            </div>
+          </section>
+
+          <section class="dialog-section">
+            <div class="section-heading">
+              <h4 data-i18n="sections.editableData">Editable data</h4>
+            </div>
+
           <div class="grid two-columns">
             <label class="field">
               <span data-i18n="fields.title">Title</span>
@@ -137,7 +179,7 @@
 
             <label class="field">
               <span data-i18n="fields.assignee">Assignee</span>
-              <input id="task-assignee-input" type="text" maxlength="80" data-i18n-placeholder="placeholders.optional" placeholder="Optional" />
+              <select id="task-assignee-select"></select>
             </label>
           </div>
 
@@ -146,36 +188,7 @@
             <textarea id="task-description-input" rows="3" maxlength="2000" data-i18n-placeholder="placeholders.optional" placeholder="Optional"></textarea>
           </label>
 
-          <div class="grid three-columns">
-            <label class="field">
-              <span data-i18n="fields.phase">Phase</span>
-              <select id="task-phase-select" required></select>
-            </label>
-
-            <label class="field">
-              <span data-i18n="fields.category">Category</span>
-              <select id="task-category-select" required></select>
-            </label>
-
-            <label class="field">
-              <span data-i18n="fields.parent">Parent task</span>
-              <select id="task-parent-select">
-                <option value="" data-i18n="placeholders.noParent">No parent</option>
-              </select>
-            </label>
-          </div>
-
           <div class="grid two-columns">
-            <label class="field">
-              <span data-i18n="fields.status">Status</span>
-              <select id="task-status-select">
-                <option value="pending" data-i18n="status.pending">Pending</option>
-                <option value="in_progress" data-i18n="status.in_progress">In progress</option>
-                <option value="completed" data-i18n="status.completed">Completed</option>
-                <option value="discarded" data-i18n="status.discarded">Discarded</option>
-              </select>
-            </label>
-
             <label class="field">
               <span data-i18n="fields.priority">Priority</span>
               <select id="task-priority-select">
@@ -191,8 +204,9 @@
             <span data-i18n="fields.notes">Notes</span>
             <textarea id="task-notes-input" rows="4" maxlength="4000" data-i18n-placeholder="placeholders.optional" placeholder="Optional"></textarea>
           </label>
+          </section>
 
-          <section class="dependency-box">
+          <section class="dependency-box dialog-section">
             <div class="dependency-header">
               <div>
                 <h4 data-i18n="dependency.title">Logical dependencies</h4>
@@ -215,6 +229,107 @@
           <button class="button button-primary" type="submit" data-i18n="actions.save">Save</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="move-dialog" class="dialog">
+      <form id="move-form" class="dialog-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow" data-i18n="dialogs.move.eyebrow">Move node</p>
+            <h3 id="move-dialog-title">Move node</h3>
+          </div>
+          <button class="icon-button" type="button" data-action="close-move-dialog" data-i18n-aria-label="aria.close" aria-label="Close">×</button>
+        </div>
+
+        <div class="dialog-body">
+          <section class="dialog-section">
+            <div class="section-heading">
+              <h4 data-i18n="sections.currentContext">Current context</h4>
+            </div>
+            <div id="move-current-context" class="context-grid"></div>
+          </section>
+
+          <section class="dialog-section">
+            <div class="section-heading">
+              <h4 data-i18n="sections.newContext">New context</h4>
+            </div>
+            <div class="grid three-columns">
+              <label class="field">
+                <span data-i18n="fields.phase">Phase</span>
+                <select id="move-phase-select" required></select>
+              </label>
+
+              <label class="field">
+                <span data-i18n="fields.category">Category</span>
+                <select id="move-category-select" required></select>
+              </label>
+
+              <label class="field">
+                <span data-i18n="fields.parent">Parent task</span>
+                <select id="move-parent-select"></select>
+              </label>
+            </div>
+          </section>
+        </div>
+
+        <div class="dialog-footer">
+          <button class="button button-ghost" type="button" data-action="close-move-dialog" data-i18n="actions.cancel">Cancel</button>
+          <button class="button button-primary" type="submit" data-i18n="actions.moveTask">Move node</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="settings-dialog" class="dialog dialog-wide">
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow" data-i18n="settings.eyebrow">Settings</p>
+            <h3 data-i18n="settings.title">Configuration</h3>
+          </div>
+          <button class="icon-button" type="button" data-action="close-settings-dialog" data-i18n-aria-label="aria.close" aria-label="Close">×</button>
+        </div>
+
+        <div class="dialog-body">
+          <section class="dialog-section">
+            <div class="section-heading">
+              <h4 data-i18n="settings.languageTitle">Language</h4>
+              <p data-i18n="settings.languageHelp">Choose the interface language.</p>
+            </div>
+
+            <label class="field field-inline language-switch">
+              <span data-i18n="locale.label">Language</span>
+              <select id="locale-switch" aria-label="Language">
+                <option value="en">English</option>
+                <option value="es">Español</option>
+              </select>
+            </label>
+          </section>
+
+          <section class="dialog-section">
+            <div class="section-heading">
+              <h4 data-i18n="settings.assigneesTitle">Assignees</h4>
+              <p data-i18n="settings.assigneesHelp">Manage the reusable assignee list once and select it from tasks.</p>
+            </div>
+
+            <form id="assignee-form" class="catalog-form" method="dialog">
+              <div class="catalog-form-main">
+                <span id="assignee-form-label" class="catalog-form-label">New assignee</span>
+                <input id="assignee-name-input" type="text" maxlength="80" data-i18n-placeholder="settings.assigneePlaceholder" placeholder="Assignee name" />
+              </div>
+              <div class="catalog-form-actions">
+                <button class="button button-ghost button-compact" type="button" data-action="cancel-assignee-edit" data-i18n="actions.cancel">Cancel</button>
+                <button class="button button-primary button-compact" type="submit" data-i18n="actions.save">Save</button>
+              </div>
+            </form>
+
+            <div id="assignee-list" class="catalog-list"></div>
+          </section>
+        </div>
+
+        <div class="dialog-footer">
+          <button class="button button-ghost" type="button" data-action="close-settings-dialog" data-i18n="actions.cancel">Cancel</button>
+        </div>
+      </div>
     </dialog>
 
     <dialog id="delete-dialog" class="dialog">

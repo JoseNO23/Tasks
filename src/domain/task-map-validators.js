@@ -5,6 +5,10 @@ function asTrimmedString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function asCatalogName(value) {
+  return asTrimmedString(value).replace(/\s+/g, " ");
+}
+
 function ensureArray(value, fieldName) {
   if (!Array.isArray(value)) {
     throw new AppError(400, "invalid_payload", `${fieldName} must be an array.`);
@@ -24,7 +28,7 @@ function ensureUniqueIds(items, label) {
 function ensureUniqueNames(items, label, scopeKey = null) {
   const seen = new Set();
   for (const item of items) {
-    const base = asTrimmedString(item.name).toLowerCase();
+    const base = asCatalogName(item.name).toLowerCase();
     const scoped = scopeKey ? `${item[scopeKey]}::${base}` : base;
     if (seen.has(scoped)) {
       throw new AppError(400, "duplicate_name", `Duplicate ${label} names are not allowed.`);
@@ -83,6 +87,110 @@ function detectDependencyCycles(taskMap) {
   }
 }
 
+function ensureHierarchySeparationFromDependencies(taskMap) {
+  const childIdsByParent = new Map();
+  const ancestorCache = new Map();
+  const descendantCache = new Map();
+
+  for (const task of taskMap.values()) {
+    if (!task.parentTaskId) {
+      continue;
+    }
+    if (!childIdsByParent.has(task.parentTaskId)) {
+      childIdsByParent.set(task.parentTaskId, []);
+    }
+    childIdsByParent.get(task.parentTaskId).push(task.id);
+  }
+
+  function getAncestorIds(taskId) {
+    if (ancestorCache.has(taskId)) {
+      return ancestorCache.get(taskId);
+    }
+
+    const found = new Set();
+    let current = taskMap.get(taskId);
+    while (current?.parentTaskId) {
+      found.add(current.parentTaskId);
+      current = taskMap.get(current.parentTaskId);
+    }
+
+    ancestorCache.set(taskId, found);
+    return found;
+  }
+
+  function getDescendantIds(taskId) {
+    if (descendantCache.has(taskId)) {
+      return descendantCache.get(taskId);
+    }
+
+    const found = new Set();
+    const queue = [...(childIdsByParent.get(taskId) ?? [])];
+
+    while (queue.length) {
+      const currentId = queue.shift();
+      found.add(currentId);
+      queue.push(...(childIdsByParent.get(currentId) ?? []));
+    }
+
+    descendantCache.set(taskId, found);
+    return found;
+  }
+
+  for (const task of taskMap.values()) {
+    const ancestors = getAncestorIds(task.id);
+    const descendants = getDescendantIds(task.id);
+
+    for (const dependencyId of task.dependencyIds) {
+      if (ancestors.has(dependencyId) || descendants.has(dependencyId)) {
+        throw new AppError(
+          400,
+          "hierarchy_dependency_conflict",
+          `Task "${task.title}" cannot depend on a node from its own local branch.`,
+        );
+      }
+    }
+  }
+}
+
+function ensureCompletedSubtrees(taskMap) {
+  const childIdsByParent = new Map();
+
+  for (const task of taskMap.values()) {
+    if (!task.parentTaskId) {
+      continue;
+    }
+    if (!childIdsByParent.has(task.parentTaskId)) {
+      childIdsByParent.set(task.parentTaskId, []);
+    }
+    childIdsByParent.get(task.parentTaskId).push(task.id);
+  }
+
+  function hasIncompleteDescendant(taskId) {
+    const queue = [...(childIdsByParent.get(taskId) ?? [])];
+
+    while (queue.length) {
+      const currentId = queue.shift();
+      const current = taskMap.get(currentId);
+      if (current.status !== "completed") {
+        return true;
+      }
+      queue.push(...(childIdsByParent.get(currentId) ?? []));
+    }
+
+    return false;
+  }
+
+  for (const task of taskMap.values()) {
+    if (task.status === "completed" && hasIncompleteDescendant(task.id)) {
+      throw new AppError(
+        400,
+        "incomplete_descendants",
+        `Task "${task.title}" cannot be completed while its subtree is still incomplete.`,
+      );
+    }
+  }
+}
+
 function collectBlockedBy(task, taskMap) {
   return task.dependencyIds.filter((dependencyId) => {
     const dependency = taskMap.get(dependencyId);
@@ -105,11 +213,13 @@ export function normalizeTaskInput(input, options = {}) {
     phaseId: asTrimmedString(input.phaseId),
     categoryId: asTrimmedString(input.categoryId),
     parentTaskId: asTrimmedString(input.parentTaskId) || null,
+    assigneeId: asTrimmedString(
+      Object.prototype.hasOwnProperty.call(input, "assigneeId") ? input.assigneeId : previous?.assigneeId,
+    ) || null,
     dependencyIds: [...new Set(dependencyIds)],
     status: asTrimmedString(input.status || previous?.status || "pending"),
     priority: asTrimmedString(input.priority || previous?.priority || "medium"),
     notes: asTrimmedString(input.notes),
-    assignee: asTrimmedString(input.assignee),
     createdAt: previous?.createdAt ?? now,
     updatedAt: now,
   };
@@ -120,15 +230,32 @@ export function validateSnapshot(snapshot) {
     throw new AppError(400, "invalid_payload", "Snapshot is invalid.");
   }
 
+  const assignees = Array.isArray(snapshot.assignees) ? snapshot.assignees : [];
+
   ensureArray(snapshot.phases, "phases");
   ensureArray(snapshot.categories, "categories");
   ensureArray(snapshot.tasks, "tasks");
 
+  ensureUniqueIds(assignees, "assignees");
   ensureUniqueIds(snapshot.phases, "phases");
   ensureUniqueIds(snapshot.categories, "categories");
   ensureUniqueIds(snapshot.tasks, "tasks");
+  ensureUniqueNames(assignees, "assignees");
   ensureUniqueNames(snapshot.phases, "phases");
   ensureUniqueNames(snapshot.categories, "categories", "phaseId");
+
+  const assigneeMap = new Map();
+  for (const assignee of assignees) {
+    const name = asCatalogName(assignee.name);
+    if (!assignee.id || !name) {
+      throw new AppError(400, "invalid_assignee", "Each assignee must have an id and name.");
+    }
+    assigneeMap.set(assignee.id, {
+      id: assignee.id,
+      name,
+      isActive: assignee.isActive !== false,
+    });
+  }
 
   const phaseMap = new Map();
   for (const phase of snapshot.phases) {
@@ -176,6 +303,9 @@ export function validateSnapshot(snapshot) {
     if (!TASK_PRIORITIES.includes(task.priority)) {
       throw new AppError(400, "invalid_priority", `Task "${task.title}" has an invalid priority.`);
     }
+    if (task.assigneeId && !assigneeMap.has(task.assigneeId)) {
+      throw new AppError(400, "missing_assignee", `Task "${task.title}" references a missing assignee.`);
+    }
     taskMap.set(task.id, task);
   }
 
@@ -204,7 +334,9 @@ export function validateSnapshot(snapshot) {
   }
 
   detectParentCycles(taskMap);
+  ensureHierarchySeparationFromDependencies(taskMap);
   detectDependencyCycles(taskMap);
+  ensureCompletedSubtrees(taskMap);
 
   for (const task of taskMap.values()) {
     const blockedBy = collectBlockedBy(task, taskMap);
@@ -220,6 +352,7 @@ export function validateSnapshot(snapshot) {
   return {
     version: Number(snapshot.version) || 1,
     savedAt: snapshot.savedAt || new Date().toISOString(),
+    assignees: assignees.map((assignee) => assigneeMap.get(assignee.id)),
     phases: snapshot.phases.map((phase) => phaseMap.get(phase.id)),
     categories: snapshot.categories.map((category) => categoryMap.get(category.id)),
     tasks: snapshot.tasks.map((task) => taskMap.get(task.id)),

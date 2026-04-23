@@ -1,7 +1,10 @@
 export function buildWorkspaceView(snapshot) {
   const tasksById = new Map(snapshot.tasks.map((task) => [task.id, task]));
+  const assigneesById = new Map(snapshot.assignees.map((assignee) => [assignee.id, assignee]));
   const childIdsByParent = new Map();
   const unlocksByTaskId = new Map();
+  const usageByAssigneeId = new Map();
+  const statusByTaskId = new Map();
 
   for (const task of snapshot.tasks) {
     if (task.parentTaskId) {
@@ -17,19 +20,55 @@ export function buildWorkspaceView(snapshot) {
       }
       unlocksByTaskId.get(dependencyId).push(task.id);
     }
+
+    if (task.assigneeId) {
+      usageByAssigneeId.set(task.assigneeId, (usageByAssigneeId.get(task.assigneeId) ?? 0) + 1);
+    }
   }
 
-  const tasks = snapshot.tasks.map((task) => {
+  function resolveTaskStatus(taskId) {
+    if (statusByTaskId.has(taskId)) {
+      return statusByTaskId.get(taskId);
+    }
+
+    const task = tasksById.get(taskId);
     const blockedByIds = task.dependencyIds.filter((dependencyId) => {
       return tasksById.get(dependencyId)?.status !== "completed";
     });
+    const parentStatus = task.parentTaskId ? resolveTaskStatus(task.parentTaskId) : null;
+    const hierarchyBlocked = Boolean(
+      parentStatus && !["in_progress", "completed"].includes(parentStatus.effectiveStatus),
+    );
+    const isOperationallyBlocked = blockedByIds.length > 0 || hierarchyBlocked;
+    const effectiveStatus = task.status === "discarded"
+      ? "discarded"
+      : isOperationallyBlocked
+        ? "blocked"
+        : task.status;
+
+    const resolved = {
+      blockedByIds,
+      hierarchyBlocked,
+      isOperationallyBlocked,
+      effectiveStatus,
+    };
+    statusByTaskId.set(taskId, resolved);
+    return resolved;
+  }
+
+  const tasks = snapshot.tasks.map((task) => {
+    const assignee = task.assigneeId ? assigneesById.get(task.assigneeId) : null;
+    const resolvedStatus = resolveTaskStatus(task.id);
 
     return {
       ...task,
+      assignee: assignee?.name ?? "",
+      assigneeActive: assignee ? assignee.isActive : null,
       childIds: childIdsByParent.get(task.id) ?? [],
-      blockedByIds,
+      blockedByIds: resolvedStatus.blockedByIds,
+      hierarchyBlocked: resolvedStatus.hierarchyBlocked,
       unlocksIds: unlocksByTaskId.get(task.id) ?? [],
-      effectiveStatus: task.status === "pending" && blockedByIds.length ? "blocked" : task.status,
+      effectiveStatus: resolvedStatus.effectiveStatus,
     };
   });
 
@@ -44,6 +83,10 @@ export function buildWorkspaceView(snapshot) {
 
   return {
     savedAt: snapshot.savedAt,
+    assignees: snapshot.assignees.map((assignee) => ({
+      ...assignee,
+      usageCount: usageByAssigneeId.get(assignee.id) ?? 0,
+    })),
     phases: snapshot.phases,
     categories: snapshot.categories,
     tasks,
