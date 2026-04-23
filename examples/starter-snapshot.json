@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "savedAt": "2026-01-01T10:00:00.000Z",
+  "phases": [
+    {
+      "id": "phase_setup",
+      "name": "Setup"
+    },
+    {
+      "id": "phase_delivery",
+      "name": "Delivery"
+    }
+  ],
+  "categories": [
+    {
+      "id": "category_foundation",
+      "phaseId": "phase_setup",
+      "name": "Foundation"
+    },
+    {
+      "id": "category_ui",
+      "phaseId": "phase_delivery",
+      "name": "Interface"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "task_brief",
+      "title": "Define the scope",
+      "description": "Write the first version of the delivery scope.",
+      "phaseId": "phase_setup",
+      "categoryId": "category_foundation",
+      "parentTaskId": null,
+      "dependencyIds": [],
+      "status": "completed",
+      "priority": "high",
+      "notes": "This is a starter example.",
+      "assignee": "Owner",
+      "createdAt": "2026-01-01T10:00:00.000Z",
+      "updatedAt": "2026-01-01T10:00:00.000Z"
+    },
+    {
+      "id": "task_wireframe",
+      "title": "Create initial wireframe",
+      "description": "Prepare the first usable layout.",
+      "phaseId": "phase_delivery",
+      "categoryId": "category_ui",
+      "parentTaskId": null,
+      "dependencyIds": [
+        "task_brief"
+      ],
+      "status": "pending",
+      "priority": "medium",
+      "notes": "",
+      "assignee": "",
+      "createdAt": "2026-01-01T10:30:00.000Z",
+      "updatedAt": "2026-01-01T10:30:00.000Z"
+    }
+  ]
+}

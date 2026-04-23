@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Task Map Template</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="eyebrow" data-i18n="app.brandEyebrow">Reusable starter</span>
+          <h1 data-i18n="app.name">Task Map Template</h1>
+          <p data-i18n="app.subtitle">Branching tasks, dependency checks, and local JSON persistence.</p>
+        </div>
+
+        <div class="header-stats" id="stats-bar"></div>
+
+        <div class="header-actions">
+          <label class="field field-compact language-switch">
+            <span data-i18n="locale.label">Language</span>
+            <select id="locale-switch" aria-label="Language">
+              <option value="en">English</option>
+              <option value="es">Español</option>
+            </select>
+          </label>
+
+          <button class="button button-ghost" id="create-phase-button" type="button" data-action="create-phase" data-i18n="actions.createPhase">New phase</button>
+          <button class="button button-ghost" id="create-category-button" type="button" data-action="create-category" data-i18n="actions.createCategory">New category</button>
+          <button class="button button-primary" id="create-task-button" type="button" data-action="create-task" data-i18n="actions.createTask">New task</button>
+          <button class="button button-ghost" type="button" data-action="export-json" data-i18n="actions.export">Export</button>
+          <button class="button button-ghost" type="button" data-action="import-json" data-i18n="actions.import">Import</button>
+        </div>
+      </header>
+
+      <section class="toolbar">
+        <label class="field field-search">
+          <span data-i18n="filters.search">Search</span>
+          <input id="search-input" type="search" autocomplete="off" data-i18n-placeholder="filters.searchPlaceholder" placeholder="Title, notes, or assignee" />
+        </label>
+
+        <label class="field field-compact">
+          <span data-i18n="filters.status">Status</span>
+          <select id="status-filter">
+            <option value="all" data-i18n="status.all">All</option>
+            <option value="pending" data-i18n="status.pending">Pending</option>
+            <option value="blocked" data-i18n="status.blocked">Blocked</option>
+            <option value="in_progress" data-i18n="status.in_progress">In progress</option>
+            <option value="completed" data-i18n="status.completed">Completed</option>
+            <option value="discarded" data-i18n="status.discarded">Discarded</option>
+          </select>
+        </label>
+
+        <label class="field field-compact">
+          <span data-i18n="filters.priority">Priority</span>
+          <select id="priority-filter">
+            <option value="all" data-i18n="priority.all">All</option>
+            <option value="critical" data-i18n="priority.critical">Critical</option>
+            <option value="high" data-i18n="priority.high">High</option>
+            <option value="medium" data-i18n="priority.medium">Medium</option>
+            <option value="low" data-i18n="priority.low">Low</option>
+          </select>
+        </label>
+
+        <div class="toolbar-actions">
+          <button class="button button-ghost" type="button" data-action="expand-all" data-i18n="actions.expandAll">Expand all</button>
+          <button class="button button-ghost" type="button" data-action="collapse-all" data-i18n="actions.collapseAll">Collapse all</button>
+        </div>
+      </section>
+
+      <main class="main-layout">
+        <section class="workspace-panel">
+          <div class="panel-heading">
+            <div>
+              <h2 data-i18n="app.panelTitle">Workspace</h2>
+              <p id="saved-at-label">Nothing saved yet</p>
+            </div>
+          </div>
+
+          <div id="map-root" class="map-root"></div>
+        </section>
+      </main>
+    </div>
+
+    <input id="import-file" type="file" accept="application/json" hidden />
+
+    <dialog id="entity-dialog" class="dialog">
+      <form id="entity-form" class="dialog-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow" id="entity-dialog-type">Phase</p>
+            <h3 id="entity-dialog-title">New phase</h3>
+          </div>
+          <button class="icon-button" type="button" data-action="close-entity-dialog" data-i18n-aria-label="aria.close" aria-label="Close">×</button>
+        </div>
+
+        <div class="dialog-body">
+          <label class="field" id="entity-phase-field">
+            <span data-i18n="fields.phase">Phase</span>
+            <select id="entity-phase-select"></select>
+          </label>
+
+          <label class="field">
+            <span data-i18n="fields.name">Name</span>
+            <input id="entity-name-input" type="text" maxlength="80" required />
+          </label>
+        </div>
+
+        <div class="dialog-footer">
+          <button class="button button-ghost" type="button" data-action="close-entity-dialog" data-i18n="actions.cancel">Cancel</button>
+          <button class="button button-primary" type="submit" data-i18n="actions.save">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="task-dialog" class="dialog dialog-wide">
+      <form id="task-form" class="dialog-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow" data-i18n="dialogs.task.eyebrow">Task</p>
+            <h3 id="task-dialog-title">New task</h3>
+          </div>
+          <button class="icon-button" type="button" data-action="close-task-dialog" data-i18n-aria-label="aria.close" aria-label="Close">×</button>
+        </div>
+
+        <div class="dialog-body">
+          <div class="grid two-columns">
+            <label class="field">
+              <span data-i18n="fields.title">Title</span>
+              <input id="task-title-input" type="text" maxlength="160" required />
+            </label>
+
+            <label class="field">
+              <span data-i18n="fields.assignee">Assignee</span>
+              <input id="task-assignee-input" type="text" maxlength="80" data-i18n-placeholder="placeholders.optional" placeholder="Optional" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span data-i18n="fields.description">Description</span>
+            <textarea id="task-description-input" rows="3" maxlength="2000" data-i18n-placeholder="placeholders.optional" placeholder="Optional"></textarea>
+          </label>
+
+          <div class="grid three-columns">
+            <label class="field">
+              <span data-i18n="fields.phase">Phase</span>
+              <select id="task-phase-select" required></select>
+            </label>
+
+            <label class="field">
+              <span data-i18n="fields.category">Category</span>
+              <select id="task-category-select" required></select>
+            </label>
+
+            <label class="field">
+              <span data-i18n="fields.parent">Parent task</span>
+              <select id="task-parent-select">
+                <option value="" data-i18n="placeholders.noParent">No parent</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="grid two-columns">
+            <label class="field">
+              <span data-i18n="fields.status">Status</span>
+              <select id="task-status-select">
+                <option value="pending" data-i18n="status.pending">Pending</option>
+                <option value="in_progress" data-i18n="status.in_progress">In progress</option>
+                <option value="completed" data-i18n="status.completed">Completed</option>
+                <option value="discarded" data-i18n="status.discarded">Discarded</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span data-i18n="fields.priority">Priority</span>
+              <select id="task-priority-select">
+                <option value="critical" data-i18n="priority.critical">Critical</option>
+                <option value="high" data-i18n="priority.high">High</option>
+                <option value="medium" data-i18n="priority.medium">Medium</option>
+                <option value="low" data-i18n="priority.low">Low</option>
+              </select>
+            </label>
+          </div>
+
+          <label class="field">
+            <span data-i18n="fields.notes">Notes</span>
+            <textarea id="task-notes-input" rows="4" maxlength="4000" data-i18n-placeholder="placeholders.optional" placeholder="Optional"></textarea>
+          </label>
+
+          <section class="dependency-box">
+            <div class="dependency-header">
+              <div>
+                <h4 data-i18n="dependency.title">Logical dependencies</h4>
+                <p data-i18n="dependency.help">Pick real tasks. No manual ids.</p>
+              </div>
+
+              <label class="field field-inline">
+                <span data-i18n="fields.dependencyFilter">Filter</span>
+                <input id="task-dependency-search" type="search" data-i18n-placeholder="placeholders.searchTask" placeholder="Search task" />
+              </label>
+            </div>
+
+            <div id="task-dependency-selected" class="chip-list"></div>
+            <div id="task-dependency-options" class="dependency-list"></div>
+          </section>
+        </div>
+
+        <div class="dialog-footer">
+          <button class="button button-ghost" type="button" data-action="close-task-dialog" data-i18n="actions.cancel">Cancel</button>
+          <button class="button button-primary" type="submit" data-i18n="actions.save">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="delete-dialog" class="dialog">
+      <form id="delete-form" class="dialog-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow" id="delete-dialog-eyebrow">Delete task</p>
+            <h3 id="delete-dialog-title">Delete task</h3>
+          </div>
+          <button class="icon-button" type="button" data-action="close-delete-dialog" data-i18n-aria-label="aria.close" aria-label="Close">×</button>
+        </div>
+
+        <div class="dialog-body">
+          <p id="delete-dialog-message" class="dialog-copy"></p>
+          <div id="delete-dialog-impact" class="impact-box"></div>
+
+          <fieldset id="delete-strategy-field" class="strategy-list">
+            <label class="strategy-option">
+              <input type="radio" name="deleteStrategy" value="branch" checked />
+              <span>
+                <strong id="delete-branch-title">Delete full branch</strong>
+                <small id="delete-branch-help">Deletes the task and every descendant.</small>
+              </span>
+            </label>
+
+            <label class="strategy-option" id="delete-promote-option">
+              <input type="radio" name="deleteStrategy" value="promote" />
+              <span>
+                <strong id="delete-promote-title">Delete node only</strong>
+                <small id="delete-promote-help">Promotes its children to the immediate upper level.</small>
+              </span>
+            </label>
+          </fieldset>
+        </div>
+
+        <div class="dialog-footer">
+          <button class="button button-ghost" type="button" data-action="close-delete-dialog" data-i18n="actions.cancel">Cancel</button>
+          <button class="button button-danger" type="submit" data-i18n="actions.delete">Delete</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast-root" class="toast-root" aria-live="polite"></div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

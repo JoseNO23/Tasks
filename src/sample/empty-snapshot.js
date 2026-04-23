@@ -1,0 +1,9 @@
+export function createEmptySnapshot() {
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    phases: [],
+    categories: [],
+    tasks: [],
+  };
+}

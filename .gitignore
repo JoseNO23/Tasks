@@ -1,0 +1,6 @@
+node_modules/
+data/task-map.json
+data/*.tmp
+npm-debug.log*
+server-*.log
+!data/.gitkeep
