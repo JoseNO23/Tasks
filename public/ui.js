@@ -78,24 +78,24 @@ export function buildIndexes(workspace) {
 }
 
 export function renderStats(workspace, t) {
-  return `
-    <article class="stat-card">
-      <strong>${workspace.stats.total}</strong>
-      <span>${escapeHtml(t("stats.total"))}</span>
-    </article>
-    <article class="stat-card">
-      <strong>${workspace.stats.completed}</strong>
-      <span>${escapeHtml(t("stats.completed"))}</span>
-    </article>
-    <article class="stat-card">
-      <strong>${workspace.stats.inProgress}</strong>
-      <span>${escapeHtml(t("stats.inProgress"))}</span>
-    </article>
-    <article class="stat-card">
-      <strong>${workspace.stats.blocked}</strong>
-      <span>${escapeHtml(t("stats.blocked"))}</span>
-    </article>
-  `;
+  const items = [
+    { className: "completed", value: workspace.stats.completed, label: t("stats.completed") },
+    { className: "in-progress", value: workspace.stats.inProgress, label: t("stats.inProgress") },
+    { className: "pending", value: workspace.stats.pending, label: t("stats.pending") },
+    { className: "blocked", value: workspace.stats.blocked, label: t("stats.blocked") },
+  ];
+
+  return items
+    .map(
+      (item) => `
+        <div class="status-strip-item">
+          <span class="status-dot ${item.className}"></span>
+          <strong>${item.value}</strong>
+          <span>${escapeHtml(item.label)}</span>
+        </div>
+      `,
+    )
+    .join("");
 }
 
 function renderTask(task, indexes, filters, uiState, visibilityCache, t) {

@@ -1,61 +1,44 @@
-# Task Map Template
+# TASKS
 
-Reusable starter for a small task-map application with:
+Aplicación simple para gestionar tareas con:
 
-- phases
-- categories
-- parent and child tasks
-- dependency validation
-- safe deletion strategies
-- local JSON persistence
-- JSON import and export
-- simple Spanish and English UI
+- fases
+- categorías
+- tareas con jerarquía local
+- dependencias lógicas
+- prioridades, notas y responsable opcional
+- persistencia local real en JSON
+- exportación e importación de respaldos
+- interfaz en español e inglés
 
-## Run
+## Ejecutar
 
 ```bash
 npm install
 npm run dev
 ```
 
-The app runs at `http://localhost:8181`.
+Disponible en `http://localhost:8080`.
 
-## Project shape
+## Estructura
 
-- `src/`: small Express server, domain rules, storage, API routes
-- `public/`: static frontend modules, styles, language support
-- `scripts/`: optional read-only import helpers
-- `examples/`: starter JSON example
-- `data/`: runtime storage directory
+- `src/`: servidor Express, reglas de dominio, persistencia y API
+- `public/`: interfaz estática modular
+- `data/`: almacenamiento local en ejecución
+- `test/`: pruebas del servicio de tareas
 
-## Persistence
+## Persistencia
 
-The source of truth is `data/task-map.json`.
-Business data is never stored in `localStorage`.
-`localStorage` is only used for UI preferences such as filters, expanded panels, and selected language.
+La fuente de verdad es `data/task-map.json`.
+Los datos de negocio no usan `localStorage`.
+`localStorage` solo guarda preferencias de la interfaz, como filtros, paneles abiertos e idioma.
 
-## Read-only imports
+## Respaldo local
 
-Import from a local JSON snapshot:
+La app permite exportar e importar JSON desde la propia interfaz para respaldar o restaurar su estado local.
+No depende de otro proyecto ni se conecta a servicios externos.
 
-```bash
-npm run import:file -- C:\path\to\snapshot.json
-```
+## Notas
 
-Import from a read-only URL:
-
-```bash
-npm run import:url -- https://example.com/task-map.json
-```
-
-These helpers only update this template's local storage file. They do not write back to the source system.
-
-## Example data
-
-Use [examples/starter-snapshot.json](examples/starter-snapshot.json) as a reference import file.
-
-## Notes
-
-- The UI ships with English and Spanish labels.
-- The backend stays intentionally small and framework-light.
-- No auth, database, or external services are required to start.
+- No requiere autenticación, base de datos ni integraciones externas.
+- La lógica de dependencias impide referencias rotas, ciclos y cambios inválidos de estado.

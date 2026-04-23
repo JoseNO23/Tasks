@@ -25,7 +25,7 @@ export function createApiRouter(service) {
     "/export",
     asyncHandler(async (_req, res) => {
       const snapshot = await service.exportSnapshot();
-      res.setHeader("Content-Disposition", 'attachment; filename="task-map-template-export.json"');
+      res.setHeader("Content-Disposition", 'attachment; filename="tasks-export.json"');
       res.json(snapshot);
     }),
   );

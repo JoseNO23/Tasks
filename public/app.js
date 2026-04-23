@@ -32,8 +32,17 @@ import {
   statusLabel,
 } from "./ui.js";
 
-const UI_STORAGE_KEY = "task-map-template-ui";
+const UI_STORAGE_KEY = "tasks-ui";
 const STATUS_CYCLE = ["pending", "in_progress", "completed", "discarded"];
+
+function createEmptySnapshot() {
+  return {
+    version: 1,
+    phases: [],
+    categories: [],
+    tasks: [],
+  };
+}
 
 const refs = {
   statsBar: document.getElementById("stats-bar"),
@@ -787,6 +796,9 @@ async function handleDocumentClick(event) {
     case "import-json":
       refs.importFile.click();
       break;
+    case "reset-workspace":
+      await handleResetWorkspace();
+      break;
     case "expand-all":
       setAllOpen(true);
       break;
@@ -817,7 +829,7 @@ async function handleExport() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `task-map-template-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `tasks-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
     showToastKey("toasts.exported");
@@ -849,6 +861,17 @@ async function handleImportFile(event) {
   } finally {
     refs.importFile.value = "";
   }
+}
+
+async function handleResetWorkspace() {
+  if (!confirmWithBrowser("confirms.resetWorkspace")) {
+    return;
+  }
+
+  await performMutation(
+    () => importSnapshot(createEmptySnapshot()),
+    "toasts.reset",
+  );
 }
 
 function handleDependencyListChange(event) {

@@ -3,21 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Task Map Template</title>
+    <title>TASKS</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <div class="brand">
-          <span class="eyebrow" data-i18n="app.brandEyebrow">Reusable starter</span>
-          <h1 data-i18n="app.name">Task Map Template</h1>
-          <p data-i18n="app.subtitle">Branching tasks, dependency checks, and local JSON persistence.</p>
+        <div class="topbar-main">
+          <div class="brand-compact">
+            <h1 data-i18n="app.name">TASKS</h1>
+            <p id="saved-at-label">Nothing saved yet</p>
+          </div>
+
+          <div class="header-stats" id="stats-bar"></div>
         </div>
 
-        <div class="header-stats" id="stats-bar"></div>
-
         <div class="header-actions">
+          <button class="button button-ghost button-compact" type="button" data-action="export-json" data-i18n="actions.export">Export</button>
+          <button class="button button-ghost button-compact" type="button" data-action="import-json" data-i18n="actions.import">Import</button>
+          <button class="button button-ghost button-compact button-reset" type="button" data-action="reset-workspace" data-i18n="actions.reset">Reset</button>
+        </div>
+      </header>
+
+      <section class="toolbar">
+        <div class="toolbar-group toolbar-group-primary">
           <label class="field field-compact language-switch">
             <span data-i18n="locale.label">Language</span>
             <select id="locale-switch" aria-label="Language">
@@ -29,53 +38,48 @@
           <button class="button button-ghost" id="create-phase-button" type="button" data-action="create-phase" data-i18n="actions.createPhase">New phase</button>
           <button class="button button-ghost" id="create-category-button" type="button" data-action="create-category" data-i18n="actions.createCategory">New category</button>
           <button class="button button-primary" id="create-task-button" type="button" data-action="create-task" data-i18n="actions.createTask">New task</button>
-          <button class="button button-ghost" type="button" data-action="export-json" data-i18n="actions.export">Export</button>
-          <button class="button button-ghost" type="button" data-action="import-json" data-i18n="actions.import">Import</button>
         </div>
-      </header>
 
-      <section class="toolbar">
-        <label class="field field-search">
-          <span data-i18n="filters.search">Search</span>
-          <input id="search-input" type="search" autocomplete="off" data-i18n-placeholder="filters.searchPlaceholder" placeholder="Title, notes, or assignee" />
-        </label>
+        <div class="toolbar-group toolbar-group-filters">
+          <label class="field field-search">
+            <span data-i18n="filters.search">Search</span>
+            <input id="search-input" type="search" autocomplete="off" data-i18n-placeholder="filters.searchPlaceholder" placeholder="Title, notes, or assignee" />
+          </label>
 
-        <label class="field field-compact">
-          <span data-i18n="filters.status">Status</span>
-          <select id="status-filter">
-            <option value="all" data-i18n="status.all">All</option>
-            <option value="pending" data-i18n="status.pending">Pending</option>
-            <option value="blocked" data-i18n="status.blocked">Blocked</option>
-            <option value="in_progress" data-i18n="status.in_progress">In progress</option>
-            <option value="completed" data-i18n="status.completed">Completed</option>
-            <option value="discarded" data-i18n="status.discarded">Discarded</option>
-          </select>
-        </label>
+          <label class="field field-compact">
+            <span data-i18n="filters.status">Status</span>
+            <select id="status-filter">
+              <option value="all" data-i18n="status.all">All</option>
+              <option value="pending" data-i18n="status.pending">Pending</option>
+              <option value="blocked" data-i18n="status.blocked">Blocked</option>
+              <option value="in_progress" data-i18n="status.in_progress">In progress</option>
+              <option value="completed" data-i18n="status.completed">Completed</option>
+              <option value="discarded" data-i18n="status.discarded">Discarded</option>
+            </select>
+          </label>
 
-        <label class="field field-compact">
-          <span data-i18n="filters.priority">Priority</span>
-          <select id="priority-filter">
-            <option value="all" data-i18n="priority.all">All</option>
-            <option value="critical" data-i18n="priority.critical">Critical</option>
-            <option value="high" data-i18n="priority.high">High</option>
-            <option value="medium" data-i18n="priority.medium">Medium</option>
-            <option value="low" data-i18n="priority.low">Low</option>
-          </select>
-        </label>
+          <label class="field field-compact">
+            <span data-i18n="filters.priority">Priority</span>
+            <select id="priority-filter">
+              <option value="all" data-i18n="priority.all">All</option>
+              <option value="critical" data-i18n="priority.critical">Critical</option>
+              <option value="high" data-i18n="priority.high">High</option>
+              <option value="medium" data-i18n="priority.medium">Medium</option>
+              <option value="low" data-i18n="priority.low">Low</option>
+            </select>
+          </label>
 
-        <div class="toolbar-actions">
-          <button class="button button-ghost" type="button" data-action="expand-all" data-i18n="actions.expandAll">Expand all</button>
-          <button class="button button-ghost" type="button" data-action="collapse-all" data-i18n="actions.collapseAll">Collapse all</button>
+          <div class="toolbar-actions">
+            <button class="button button-ghost" type="button" data-action="expand-all" data-i18n="actions.expandAll">Expand all</button>
+            <button class="button button-ghost" type="button" data-action="collapse-all" data-i18n="actions.collapseAll">Collapse all</button>
+          </div>
         </div>
       </section>
 
       <main class="main-layout">
         <section class="workspace-panel">
           <div class="panel-heading">
-            <div>
-              <h2 data-i18n="app.panelTitle">Workspace</h2>
-              <p id="saved-at-label">Nothing saved yet</p>
-            </div>
+            <h2 data-i18n="app.panelTitle">Task map</h2>
           </div>
 
           <div id="map-root" class="map-root"></div>

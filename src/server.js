@@ -23,7 +23,7 @@ app.use((_req, res) => {
   res.sendFile(path.join(publicDir, "index.html"));
 });
 
-const port = Number(process.env.PORT || 8181);
+const port = Number(process.env.PORT || 8080);
 app.listen(port, () => {
-  console.log(`Task Map Template running at http://localhost:${port}`);
+  console.log(`TASKS running at http://localhost:${port}`);
 });

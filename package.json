@@ -1,7 +1,7 @@
 {
-  "name": "task-map-template",
+  "name": "tasks",
   "version": "1.0.0",
-  "description": "Reusable task map template with local persistence, branching tasks, and dependency validation.",
+  "description": "Simple tasks page with local JSON persistence.",
   "main": "src/server.js",
   "directories": {
     "test": "test"
@@ -9,13 +9,9 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "test": "node --test",
-    "import:file": "node scripts/sync-json.mjs",
-    "import:url": "node scripts/sync-url.mjs"
+    "test": "node --test"
   },
   "keywords": [
-    "task-map",
-    "template",
     "tasks"
   ],
   "author": "",
