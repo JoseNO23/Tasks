@@ -22,7 +22,7 @@
           <button class="button button-ghost button-compact" type="button" data-action="open-settings" data-i18n="actions.settings">Settings</button>
           <button class="button button-ghost button-compact" type="button" data-action="export-json" data-i18n="actions.export">Export</button>
           <button class="button button-ghost button-compact" type="button" data-action="import-json" data-i18n="actions.import">Import</button>
-          <button class="button button-ghost button-compact button-reset" type="button" data-action="reset-workspace" data-i18n="actions.reset">Reset</button>
+          <button class="button button-ghost button-compact button-reset" type="button" data-action="reset-workspace" data-i18n="actions.resetData">Reset data</button>
         </div>
       </header>
 
@@ -63,8 +63,7 @@
           </label>
 
           <div class="toolbar-actions">
-            <button class="button button-ghost" type="button" data-action="expand-all" data-i18n="actions.expandAll">Expand all</button>
-            <button class="button button-ghost" type="button" data-action="collapse-all" data-i18n="actions.collapseAll">Collapse all</button>
+            <button class="button button-ghost" type="button" data-action="reset-map-progress" data-i18n="actions.resetMapProgress">Restart map</button>
           </div>
         </div>
       </section>
@@ -73,6 +72,37 @@
         <section class="workspace-panel">
           <div class="panel-heading">
             <h2 data-i18n="app.panelTitle">Task map</h2>
+            <div class="panel-heading-actions toolbar-view-actions" aria-label="View actions">
+              <button
+                class="icon-button toolbar-icon-button"
+                type="button"
+                data-action="expand-all"
+                data-i18n-aria-label="actions.expandAll"
+                data-i18n-title="actions.expandAll"
+                aria-label="Expand all"
+                title="Expand all"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M7 8l5 5 5-5" />
+                  <path d="M7 13l5 5 5-5" />
+                </svg>
+              </button>
+
+              <button
+                class="icon-button toolbar-icon-button"
+                type="button"
+                data-action="collapse-all"
+                data-i18n-aria-label="actions.collapseAll"
+                data-i18n-title="actions.collapseAll"
+                aria-label="Collapse all"
+                title="Collapse all"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M7 16l5-5 5 5" />
+                  <path d="M7 11l5-5 5 5" />
+                </svg>
+              </button>
+            </div>
           </div>
 
           <div id="map-root" class="map-root"></div>
@@ -101,6 +131,25 @@
       </div>
     </dialog>
 
+    <dialog id="time-dialog" class="dialog dialog-compact">
+      <div class="dialog-form">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow" data-i18n="dialogs.time.eyebrow">Time</p>
+            <h3 id="time-dialog-title">Time</h3>
+          </div>
+          <button class="icon-button" type="button" data-action="close-time-dialog" data-i18n-aria-label="aria.close" aria-label="Close">×</button>
+        </div>
+
+        <div class="dialog-body">
+          <div id="time-dialog-summary" class="detail-summary"></div>
+          <div id="time-dialog-body" class="detail-grid"></div>
+        </div>
+
+        <div id="time-dialog-actions" class="dialog-footer"></div>
+      </div>
+    </dialog>
+
     <dialog id="entity-dialog" class="dialog">
       <form id="entity-form" class="dialog-form" method="dialog">
         <div class="dialog-header">
@@ -112,6 +161,14 @@
         </div>
 
         <div class="dialog-body">
+          <section id="entity-context-section" class="dialog-section is-hidden">
+            <div class="section-heading">
+              <h4 data-i18n="sections.inheritedContext">Inherited context</h4>
+              <p data-i18n="sections.inheritedContextHelp">This context comes from the node origin and cannot be changed here.</p>
+            </div>
+            <div id="entity-context-grid" class="context-grid"></div>
+          </section>
+
           <label class="field" id="entity-phase-field">
             <span data-i18n="fields.phase">Phase</span>
             <select id="entity-phase-select"></select>
@@ -163,12 +220,18 @@
                 <span data-i18n="fields.category">Category</span>
                 <select id="task-category-select" required></select>
               </label>
+
+              <label class="field">
+                <span data-i18n="fields.parent">Parent task</span>
+                <select id="task-parent-select"></select>
+              </label>
             </div>
           </section>
 
           <section class="dialog-section">
             <div class="section-heading">
-              <h4 data-i18n="sections.editableData">Editable data</h4>
+              <h4 data-i18n="sections.quickCreate">Quick create</h4>
+              <p id="task-quick-note" data-i18n="sections.quickCreateHelp">Start with the essentials. Add the rest from task detail.</p>
             </div>
 
           <div class="grid two-columns">
@@ -177,16 +240,28 @@
               <input id="task-title-input" type="text" maxlength="160" required />
             </label>
 
-            <label class="field">
+            <div class="field assignee-field">
               <span data-i18n="fields.assignee">Assignee</span>
-              <select id="task-assignee-select"></select>
-            </label>
+              <div class="choice-grid">
+                <label class="choice-card">
+                  <input id="task-assignee-mode-assigned" type="radio" name="task-assignee-mode" value="assigned" />
+                  <span class="choice-card-content">
+                    <strong data-i18n="fields.assigneeAssigned">Assign someone</strong>
+                  </span>
+                </label>
+                <label class="choice-card">
+                  <input id="task-assignee-mode-none" type="radio" name="task-assignee-mode" value="none" />
+                  <span class="choice-card-content">
+                    <strong data-i18n="fields.assigneeNone">No assignee</strong>
+                  </span>
+                </label>
+              </div>
+              <label class="field field-nested" id="task-assignee-select-field">
+                <span data-i18n="fields.assigneeSelect">Responsible</span>
+                <select id="task-assignee-select"></select>
+              </label>
+            </div>
           </div>
-
-          <label class="field">
-            <span data-i18n="fields.description">Description</span>
-            <textarea id="task-description-input" rows="3" maxlength="2000" data-i18n-placeholder="placeholders.optional" placeholder="Optional"></textarea>
-          </label>
 
           <div class="grid two-columns">
             <label class="field">
@@ -199,11 +274,58 @@
               </select>
             </label>
           </div>
+          </section>
+
+          <section id="task-advanced-section" class="dialog-section">
+            <div class="section-heading">
+              <h4 data-i18n="sections.advancedDetails">Advanced details</h4>
+            </div>
+
+          <label class="field">
+            <span data-i18n="fields.description">Description</span>
+            <textarea id="task-description-input" rows="3" maxlength="2000" data-i18n-placeholder="placeholders.optional" placeholder="Optional"></textarea>
+          </label>
 
           <label class="field">
             <span data-i18n="fields.notes">Notes</span>
             <textarea id="task-notes-input" rows="4" maxlength="4000" data-i18n-placeholder="placeholders.optional" placeholder="Optional"></textarea>
           </label>
+
+          <section class="dialog-section">
+            <div class="section-heading">
+              <h4 data-i18n="sections.time">Time</h4>
+              <p data-i18n="sections.timeHelp">Choose only the time controls this task really needs.</p>
+            </div>
+
+            <div class="grid two-columns">
+              <label class="field">
+                <span data-i18n="fields.timeMode">Time mode</span>
+                <select id="task-time-mode-select">
+                  <option value="none" data-i18n="time.mode.none">No time</option>
+                  <option value="date" data-i18n="time.mode.date">Date</option>
+                  <option value="datetime" data-i18n="time.mode.datetime">Date and time</option>
+                  <option value="stopwatch" data-i18n="time.mode.stopwatch">Stopwatch</option>
+                  <option value="timer" data-i18n="time.mode.timer">Timer</option>
+                </select>
+              </label>
+
+              <label class="field is-hidden" id="task-date-field">
+                <span data-i18n="fields.dueDate">Date</span>
+                <input id="task-date-input" type="date" />
+              </label>
+
+              <label class="field is-hidden" id="task-datetime-field">
+                <span data-i18n="fields.dueAt">Date and time</span>
+                <input id="task-due-input" type="datetime-local" />
+              </label>
+
+              <label class="field is-hidden" id="task-timer-duration-field">
+                <span data-i18n="fields.timerMinutes">Timer duration (minutes)</span>
+                <input id="task-timer-duration-input" type="number" min="1" step="1" />
+              </label>
+            </div>
+
+            <div id="task-tracked-summary" class="context-item context-item-wide is-hidden"></div>
           </section>
 
           <section class="dependency-box dialog-section">
@@ -221,6 +343,7 @@
 
             <div id="task-dependency-selected" class="chip-list"></div>
             <div id="task-dependency-options" class="dependency-list"></div>
+          </section>
           </section>
         </div>
 

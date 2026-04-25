@@ -12,7 +12,14 @@ import {
   importSnapshot,
   moveCategory,
   movePhase,
+  pauseTaskTimer,
+  resetCategoryProgress,
+  resetMapProgress,
+  resetPhaseProgress,
+  resetRootTaskProgress,
+  resetTaskTimer,
   setTaskStatus,
+  startTaskTimer,
   updateAssignee,
   updateCategory,
   updatePhase,
@@ -21,11 +28,30 @@ import {
 import {
   applyStaticTranslations,
   createTranslator,
+  formatDateOnly,
   formatDateTime,
   getStoredLocale,
   normalizeLocale,
   setStoredLocale,
 } from "./i18n.js";
+import {
+  formatDuration,
+  fromDateInputValue,
+  fromDateTimeLocalValue,
+  getLiveRemainingMs,
+  getLiveTrackedMs,
+  getTaskTimeState as deriveTaskTimeState,
+  getTimeIconSvg,
+  isDateMode,
+  isDateTimeMode,
+  isStopwatchMode,
+  isTimerMode,
+  minutesToMs,
+  msToWholeMinutes,
+  toDateInputValue,
+  toDateTimeLocalValue,
+  usesLiveClock,
+} from "./task-time.js";
 import {
   buildIndexes,
   escapeHtml,
@@ -63,10 +89,17 @@ const refs = {
   detailDialogSummary: document.getElementById("detail-dialog-summary"),
   detailDialogBody: document.getElementById("detail-dialog-body"),
   detailDialogActions: document.getElementById("detail-dialog-actions"),
+  timeDialog: document.getElementById("time-dialog"),
+  timeDialogTitle: document.getElementById("time-dialog-title"),
+  timeDialogSummary: document.getElementById("time-dialog-summary"),
+  timeDialogBody: document.getElementById("time-dialog-body"),
+  timeDialogActions: document.getElementById("time-dialog-actions"),
   entityDialog: document.getElementById("entity-dialog"),
   entityForm: document.getElementById("entity-form"),
   entityDialogType: document.getElementById("entity-dialog-type"),
   entityDialogTitle: document.getElementById("entity-dialog-title"),
+  entityContextSection: document.getElementById("entity-context-section"),
+  entityContextGrid: document.getElementById("entity-context-grid"),
   entityPhaseField: document.getElementById("entity-phase-field"),
   entityPhaseSelect: document.getElementById("entity-phase-select"),
   entityNameInput: document.getElementById("entity-name-input"),
@@ -76,12 +109,26 @@ const refs = {
   taskContextSection: document.getElementById("task-context-section"),
   taskContextGrid: document.getElementById("task-context-grid"),
   taskScopeSection: document.getElementById("task-scope-section"),
+  taskQuickNote: document.getElementById("task-quick-note"),
+  taskAdvancedSection: document.getElementById("task-advanced-section"),
   taskTitleInput: document.getElementById("task-title-input"),
   taskAssigneeSelect: document.getElementById("task-assignee-select"),
+  taskAssigneeModeAssigned: document.getElementById("task-assignee-mode-assigned"),
+  taskAssigneeModeNone: document.getElementById("task-assignee-mode-none"),
+  taskAssigneeSelectField: document.getElementById("task-assignee-select-field"),
   taskDescriptionInput: document.getElementById("task-description-input"),
   taskPhaseSelect: document.getElementById("task-phase-select"),
   taskCategorySelect: document.getElementById("task-category-select"),
+  taskParentSelect: document.getElementById("task-parent-select"),
   taskPrioritySelect: document.getElementById("task-priority-select"),
+  taskTimeModeSelect: document.getElementById("task-time-mode-select"),
+  taskDateField: document.getElementById("task-date-field"),
+  taskDateInput: document.getElementById("task-date-input"),
+  taskDateTimeField: document.getElementById("task-datetime-field"),
+  taskDueInput: document.getElementById("task-due-input"),
+  taskTimerDurationField: document.getElementById("task-timer-duration-field"),
+  taskTimerDurationInput: document.getElementById("task-timer-duration-input"),
+  taskTrackedSummary: document.getElementById("task-tracked-summary"),
   taskNotesInput: document.getElementById("task-notes-input"),
   taskDependencySearch: document.getElementById("task-dependency-search"),
   taskDependencySelected: document.getElementById("task-dependency-selected"),
@@ -135,6 +182,7 @@ const state = {
   ui: loadUiState(),
   dialogs: {
     detail: null,
+    time: null,
     entity: null,
     task: null,
     move: null,
@@ -143,8 +191,57 @@ const state = {
   },
 };
 
+let liveRefreshHandle = null;
+
 function t(key, params) {
   return state.translate(key, params);
+}
+
+function getCurrentLocale() {
+  return document.documentElement.lang || state.locale || "en";
+}
+
+function canUseStopwatch(task) {
+  return isStopwatchMode(task?.timeMode);
+}
+
+function canUseDate(task) {
+  return isDateMode(task?.timeMode);
+}
+
+function canUseDateTime(task) {
+  return isDateTimeMode(task?.timeMode);
+}
+
+function canUseTimer(task) {
+  return isTimerMode(task?.timeMode);
+}
+
+function getTaskTimeView(task) {
+  const timeState = deriveTaskTimeState(task);
+  return {
+    ...timeState,
+    trackedLabel: formatDuration(timeState.trackedMs),
+    remainingLabel: formatDuration(timeState.remainingMs),
+  };
+}
+
+function hasLiveTimeSignals(workspace) {
+  if (!workspace) {
+    return false;
+  }
+
+  return workspace.tasks.some((task) => {
+    if (task.timerRunning) {
+      return true;
+    }
+
+    if ((canUseDate(task) || canUseDateTime(task)) && !["completed", "discarded"].includes(task.effectiveStatus)) {
+      return true;
+    }
+
+    return false;
+  });
 }
 
 function loadUiState() {
@@ -217,6 +314,54 @@ function findAssignee(assigneeId) {
   return state.workspace.assignees.find((assignee) => assignee.id === assigneeId) || null;
 }
 
+function applyTimeIndicatorState(element, task) {
+  const timeState = getTaskTimeView(task);
+  if (!timeState.hasTime) {
+    element.remove();
+    return;
+  }
+
+  element.className = `time-indicator-button tone-${timeState.tone}`;
+  element.title = `${t(`time.mode.${timeState.mode}`)} · ${t(timeState.stateKey)}`;
+  element.setAttribute("aria-label", t("aria.openTime"));
+}
+
+function refreshLiveTimeDisplays() {
+  if (!state.workspace) {
+    return;
+  }
+
+  document.querySelectorAll("[data-time-indicator-for]").forEach((element) => {
+    const task = findTask(element.dataset.timeIndicatorFor);
+    if (!task) {
+      element.remove();
+      return;
+    }
+
+    applyTimeIndicatorState(element, task);
+  });
+
+  if (state.dialogs.time) {
+    syncTimeDialog();
+  }
+}
+
+function syncLiveRefresh() {
+  if (liveRefreshHandle) {
+    window.clearInterval(liveRefreshHandle);
+    liveRefreshHandle = null;
+  }
+
+  if (!hasLiveTimeSignals(state.workspace)) {
+    return;
+  }
+
+  refreshLiveTimeDisplays();
+  liveRefreshHandle = window.setInterval(() => {
+    refreshLiveTimeDisplays();
+  }, 1000);
+}
+
 function formatTaskNames(taskIds, fallbackKey = "task.none") {
   const names = taskIds
     .map((taskId) => findTask(taskId))
@@ -249,6 +394,104 @@ function renderContextItem(label, value, options = {}) {
       <span>${escapeHtml(label)}</span>
       <strong>${value || escapeHtml(t(options.fallbackKey || "task.none"))}</strong>
     </div>
+  `;
+}
+
+function renderTimeDetailMetric(label, value) {
+  return `
+    <div class="time-detail-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${value}</strong>
+    </div>
+  `;
+}
+
+function renderTimeTonePill(timeState) {
+  return `
+    <span class="meta-pill time-state-pill tone-${timeState.tone}">
+      ${escapeHtml(t(timeState.stateKey))}
+    </span>
+  `;
+}
+
+function describeTaskTime(task) {
+  const locale = getCurrentLocale();
+  const timeState = getTaskTimeView(task);
+
+  if (!timeState.hasTime) {
+    return {
+      ...timeState,
+      modeLabel: t("time.mode.none"),
+      stateLabel: t("time.state.none"),
+    };
+  }
+
+  return {
+    ...timeState,
+    modeLabel: t(`time.mode.${timeState.mode}`),
+    stateLabel: t(timeState.stateKey),
+    dueDateLabel: task.dueDate ? formatDateOnly(locale, task.dueDate) : "",
+    dueAtLabel: task.dueAt ? formatDateTime(locale, task.dueAt) : "",
+    completedAtLabel: task.completedAt ? formatDateTime(locale, task.completedAt) : "",
+  };
+}
+
+function renderTimeSummary(task) {
+  const details = describeTaskTime(task);
+  if (!details.hasTime) {
+    return renderDetailItem(t("fields.timeMode"), escapeHtml(details.modeLabel));
+  }
+
+  return `
+    <section class="detail-item detail-item-wide time-summary-card">
+      <span>${escapeHtml(t("fields.timeMode"))}</span>
+      <div class="time-summary-stack">
+        <div class="time-summary-head">
+          <span class="time-summary-icon tone-${details.tone}">
+            ${getTimeIconSvg(details.icon)}
+          </span>
+          <div class="time-summary-copy">
+            <strong>${escapeHtml(details.modeLabel)}</strong>
+            <small>${escapeHtml(details.stateLabel)}</small>
+          </div>
+        </div>
+        <button class="button button-ghost button-compact" type="button" data-action="open-task-time" data-task-id="${task.id}">
+          ${escapeHtml(t("actions.viewTime"))}
+        </button>
+      </div>
+    </section>
+  `;
+}
+
+function renderTimeDialogActions(task, details) {
+  if (!details.hasTime) {
+    refs.timeDialogActions.innerHTML = `
+      <button class="button button-ghost" type="button" data-action="close-time-dialog">${escapeHtml(t("actions.cancel"))}</button>
+    `;
+    return;
+  }
+
+  const canStart = usesLiveClock(task.timeMode) && !task.timerRunning && !["blocked", "completed", "discarded"].includes(task.effectiveStatus) && (!canUseTimer(task) || details.remainingMs > 0);
+  const canPause = usesLiveClock(task.timeMode) && task.timerRunning;
+  const canReset = canUseStopwatch(task)
+    ? task.trackedMs > 0 || task.timerRunning
+    : canUseTimer(task)
+      ? (task.timerDurationMs ?? 0) > 0
+      : false;
+  const startLabel = canUseStopwatch(task)
+    ? (task.trackedMs > 0 ? t("actions.resumeTimer") : t("actions.startTimer"))
+    : (details.remainingMs < (task.timerDurationMs ?? 0) ? t("actions.resumeTimer") : t("actions.startTimer"));
+
+  refs.timeDialogActions.innerHTML = `
+    <button class="button button-ghost" type="button" data-action="close-time-dialog">${escapeHtml(t("actions.cancel"))}</button>
+    ${usesLiveClock(task.timeMode) ? `
+      <button class="button button-ghost" type="button" data-action="${task.timerRunning ? "pause-task-timer" : "start-task-timer"}" data-task-id="${task.id}" ${canStart || canPause ? "" : "disabled"}>
+        ${escapeHtml(task.timerRunning ? t("actions.pauseTimer") : startLabel)}
+      </button>
+      <button class="button button-ghost" type="button" data-action="reset-task-timer" data-task-id="${task.id}" ${canReset ? "" : "disabled"}>
+        ${escapeHtml(t("actions.resetTimer"))}
+      </button>
+    ` : ""}
   `;
 }
 
@@ -323,14 +566,14 @@ function renderDetailActions(actions) {
 function buildAssigneeOptions(selectedAssigneeId = "") {
   const selectedAssignee = selectedAssigneeId ? findAssignee(selectedAssigneeId) : null;
   const options = [
-    `<option value="">${escapeHtml(t("labels.noAssignee"))}</option>`,
+    `<option value="">${escapeHtml(t("placeholders.selectAssignee"))}</option>`,
     ...state.workspace.assignees
       .filter((assignee) => assignee.isActive || assignee.id === selectedAssigneeId)
       .map((assignee) => `<option value="${assignee.id}">${escapeHtml(formatAssigneeLabel(assignee))}</option>`),
   ];
 
   if (selectedAssigneeId && !selectedAssignee) {
-    options.push(`<option value="${selectedAssigneeId}">${escapeHtml(t("labels.noAssignee"))}</option>`);
+    options.push(`<option value="${selectedAssigneeId}">${escapeHtml(t("placeholders.selectAssignee"))}</option>`);
   }
 
   return options.join("");
@@ -339,6 +582,27 @@ function buildAssigneeOptions(selectedAssigneeId = "") {
 function syncTaskAssigneeOptions(selectedAssigneeId = "") {
   refs.taskAssigneeSelect.innerHTML = buildAssigneeOptions(selectedAssigneeId);
   refs.taskAssigneeSelect.value = selectedAssigneeId || "";
+  syncTaskAssigneeState();
+}
+
+function syncTaskAssigneeState() {
+  const assigneeEnabled = refs.taskAssigneeModeAssigned.checked;
+  refs.taskAssigneeSelectField.classList.toggle("is-hidden", !assigneeEnabled);
+  refs.taskAssigneeSelect.disabled = !assigneeEnabled;
+  if (!assigneeEnabled) {
+    refs.taskAssigneeSelect.value = "";
+  }
+}
+
+function syncTaskDialogMode() {
+  const dialogState = state.dialogs.task;
+  if (!dialogState) {
+    return;
+  }
+
+  const isQuickCreate = dialogState.mode === "create";
+  refs.taskAdvancedSection.classList.toggle("is-hidden", isQuickCreate);
+  refs.taskQuickNote.classList.toggle("is-hidden", !isQuickCreate);
 }
 
 function syncSettingsDialog() {
@@ -442,6 +706,7 @@ function render() {
   refs.createCategoryButton.disabled = state.workspace.phases.length === 0;
   refs.createTaskButton.disabled = state.workspace.categories.length === 0;
   syncOpenDialogCopy();
+  syncLiveRefresh();
 }
 
 function showToast(message, type = "success") {
@@ -483,9 +748,115 @@ function closeDetailDialog() {
   state.dialogs.detail = null;
 }
 
+function closeEntityDialog() {
+  closeDialog(refs.entityDialog);
+  state.dialogs.entity = null;
+}
+
+function closeTaskDialog() {
+  closeDialog(refs.taskDialog);
+  state.dialogs.task = null;
+}
+
+function closeMoveDialog() {
+  closeDialog(refs.moveDialog);
+  state.dialogs.move = null;
+}
+
+function closeDeleteDialog() {
+  closeDialog(refs.deleteDialog);
+  state.dialogs.delete = null;
+}
+
+function closeTimeDialog() {
+  closeDialog(refs.timeDialog);
+  state.dialogs.time = null;
+}
+
 function closeSettingsDialog() {
   closeDialog(refs.settingsDialog);
   state.dialogs.settings = null;
+}
+
+function syncTimeDialog() {
+  const dialogState = state.dialogs.time;
+  if (!dialogState) {
+    return;
+  }
+
+  const task = findTask(dialogState.taskId);
+  if (!task) {
+    closeTimeDialog();
+    return;
+  }
+  if (task.timeMode === "none") {
+    closeTimeDialog();
+    return;
+  }
+
+  const details = describeTaskTime(task);
+  refs.timeDialogTitle.textContent = task.title;
+  refs.timeDialogSummary.innerHTML = `
+    <div class="detail-summary-main">
+      <div class="detail-summary-row">
+        <span class="time-summary-icon tone-${details.tone}">
+          ${getTimeIconSvg(details.icon)}
+        </span>
+        <span class="meta-pill">${escapeHtml(details.modeLabel)}</span>
+        ${details.hasTime ? renderTimeTonePill(details) : ""}
+      </div>
+    </div>
+  `;
+
+  refs.timeDialogBody.innerHTML = `
+    ${renderDetailItem(t("fields.timeMode"), escapeHtml(details.modeLabel))}
+    ${renderDetailItem(t("fields.timeState"), escapeHtml(details.stateLabel))}
+    ${canUseDate(task)
+      ? renderDetailItem(
+          t("fields.dueDate"),
+          details.dueDateLabel ? escapeHtml(details.dueDateLabel) : "",
+          { fallbackKey: "time.noDate" },
+        )
+      : ""}
+    ${canUseDateTime(task)
+      ? renderDetailItem(
+          t("fields.dueAt"),
+          details.dueAtLabel ? escapeHtml(details.dueAtLabel) : "",
+          { fallbackKey: "time.deadlineNone" },
+        )
+      : ""}
+    ${canUseStopwatch(task)
+      ? renderDetailItem(t("fields.trackedTime"), escapeHtml(details.trackedLabel))
+      : ""}
+    ${canUseTimer(task)
+      ? renderDetailItem(t("fields.remainingTime"), escapeHtml(details.remainingLabel))
+      : ""}
+    ${canUseTimer(task)
+      ? renderDetailItem(
+          t("fields.timerMinutes"),
+          task.timerDurationMs ? escapeHtml(t("time.timerDurationMinutes", { count: Math.round(task.timerDurationMs / 60000) })) : "",
+          { fallbackKey: "time.noTimerDuration" },
+        )
+      : ""}
+    ${task.completedAt
+      ? renderDetailItem(t("fields.completedAt"), escapeHtml(details.completedAtLabel))
+      : ""}
+  `;
+
+  renderTimeDialogActions(task, details);
+}
+
+function openTimeDialog(taskId) {
+  const task = findTask(taskId);
+  if (!task || task.timeMode === "none") {
+    return;
+  }
+
+  state.dialogs.time = { taskId };
+  syncTimeDialog();
+  if (!refs.timeDialog.open) {
+    refs.timeDialog.showModal();
+  }
 }
 
 function syncDetailDialog() {
@@ -514,10 +885,10 @@ function syncDetailDialog() {
           <span class="badge status-${task.effectiveStatus}">${escapeHtml(statusLabel(t, task.effectiveStatus))}</span>
           <span class="badge priority-${task.priority}">${escapeHtml(priorityLabel(t, task.priority))}</span>
           ${task.assignee ? `<span class="meta-pill">@ ${escapeHtml(task.assignee)}</span>` : ""}
+          ${task.noAssignee ? `<span class="meta-pill no-assignee-pill">${escapeHtml(t("labels.noAssignee"))}</span>` : ""}
           ${assignee && assignee.isActive === false ? `<span class="meta-pill">${escapeHtml(t("labels.inactive"))}</span>` : ""}
           ${task.childIds.length ? `<span class="meta-pill">${escapeHtml(t("count.child", { count: task.childIds.length }))}</span>` : ""}
         </div>
-        ${task.description ? `<p class="detail-summary-copy">${escapeHtml(task.description)}</p>` : `<p class="detail-summary-copy">${escapeHtml(t("task.noDescription"))}</p>`}
       </div>
     `;
 
@@ -526,9 +897,18 @@ function syncDetailDialog() {
       ${renderDetailItem(t("fields.category"), escapeHtml(category?.name ?? t("labels.noCategory")))}
       ${renderDetailItem(t("fields.status"), escapeHtml(statusLabel(t, task.effectiveStatus)))}
       ${renderDetailItem(t("fields.priority"), escapeHtml(priorityLabel(t, task.priority)))}
-      ${renderDetailItem(t("fields.assignee"), task.assignee ? escapeHtml(formatAssigneeLabel(assignee ?? { name: task.assignee, isActive: task.assigneeActive })) : "", { fallbackKey: "labels.noAssignee" })}
+      ${renderDetailItem(
+        t("fields.assignee"),
+        task.assignee
+          ? escapeHtml(formatAssigneeLabel(assignee ?? { name: task.assignee, isActive: task.assigneeActive }))
+          : task.noAssignee
+            ? `<span class="no-assignee-badge">${escapeHtml(t("labels.noAssignee"))}</span>`
+            : "",
+      )}
+      ${renderDetailItem(t("fields.description"), task.description ? escapeHtml(task.description) : "", { wide: true, fallbackKey: "task.noDescription" })}
       ${renderDetailItem(t("task.structure"), parent ? escapeHtml(t("task.childOf", { title: parent.title })) : escapeHtml(t("task.root")))}
       ${renderDetailItem(t("fields.path"), buildTaskPath(task.id), { wide: true })}
+      ${renderTimeSummary(task)}
       ${renderDetailItem(t("task.directChildren"), task.childIds.length ? escapeHtml(t("count.child", { count: task.childIds.length })) : "", { fallbackKey: "task.none" })}
       ${renderDetailItem(t("task.dependsOn"), formatTaskNames(task.dependencyIds, "task.noDependencies"), { wide: true })}
       ${renderDetailItem(t("task.blockedBy"), formatTaskNames(task.blockedByIds, "task.noDependencies"), { wide: true })}
@@ -537,7 +917,9 @@ function syncDetailDialog() {
     `;
 
     renderDetailActions([
+      ...(task.timeMode !== "none" ? [{ action: "detail-open-time", label: t("actions.viewTime") }] : []),
       { action: "detail-add-child", label: t("actions.addChild") },
+      ...(!task.parentTaskId ? [{ action: "detail-reset-root-task-progress", label: t("actions.resetBranchProgress") }] : []),
       { action: "detail-move-task", label: t("actions.moveTask") },
       { action: "detail-edit-task", label: t("dialogs.detail.edit") },
       { action: "detail-delete-task", label: t("dialogs.detail.delete"), variant: "danger" },
@@ -588,6 +970,7 @@ function syncDetailDialog() {
 
     renderDetailActions([
       { action: "detail-create-category", label: t("actions.createCategory") },
+      { action: "detail-reset-phase-progress", label: t("actions.resetPhaseProgress") },
       { action: "detail-move-phase-up", label: t("actions.moveUp"), disabled: !canMoveUp },
       { action: "detail-move-phase-down", label: t("actions.moveDown"), disabled: !canMoveDown },
       { action: "detail-edit-phase", label: t("dialogs.detail.edit") },
@@ -639,6 +1022,7 @@ function syncDetailDialog() {
 
     renderDetailActions([
       { action: "detail-create-task", label: t("actions.createTask") },
+      { action: "detail-reset-category-progress", label: t("actions.resetCategoryProgress") },
       { action: "detail-move-category-up", label: t("actions.moveUp"), disabled: !canMoveUp },
       { action: "detail-move-category-down", label: t("actions.moveDown"), disabled: !canMoveDown },
       { action: "detail-edit-category", label: t("dialogs.detail.edit") },
@@ -750,22 +1134,57 @@ function syncEntityDialogCopy() {
       ? isCategory ? "dialogs.entity.editCategory" : "dialogs.entity.editPhase"
       : isCategory ? "dialogs.entity.newCategory" : "dialogs.entity.newPhase",
   );
+
+  syncEntityDialogContext();
+}
+
+function syncEntityDialogContext() {
+  const dialogState = state.dialogs.entity;
+  if (!dialogState) {
+    return;
+  }
+
+  const usesLockedPhase = dialogState.type === "category" && dialogState.phaseMode !== "global";
+  refs.entityContextSection.classList.toggle("is-hidden", !usesLockedPhase);
+  refs.entityPhaseField.classList.toggle("is-hidden", dialogState.type !== "category" || usesLockedPhase);
+
+  refs.entityContextGrid.innerHTML = usesLockedPhase
+    ? renderContextItem(
+      t("fields.phase"),
+      escapeHtml(findPhase(dialogState.phaseId)?.name ?? t("labels.noPhase")),
+      { wide: true },
+    )
+    : "";
 }
 
 function openEntityDialog(config) {
-  state.dialogs.entity = config;
   const isCategory = config.type === "category";
   const currentEntity = config.id ? (isCategory ? findCategory(config.id) : findPhase(config.id)) : null;
+  const phaseMode = isCategory
+    ? currentEntity
+      ? "locked"
+      : config.source === "phase"
+        ? "locked"
+        : "global"
+    : "none";
+  const phaseId = isCategory
+    ? currentEntity?.phaseId ?? config.phaseId ?? state.workspace.phases[0]?.id ?? ""
+    : "";
+
+  state.dialogs.entity = {
+    ...config,
+    phaseMode,
+    phaseId,
+  };
 
   refs.entityNameInput.value = currentEntity?.name ?? "";
-  refs.entityPhaseField.classList.toggle("is-hidden", !isCategory);
-  refs.entityPhaseSelect.disabled = config.mode === "edit";
+  refs.entityPhaseSelect.disabled = !isCategory || phaseMode !== "global";
   refs.entityPhaseSelect.innerHTML = state.workspace.phases
     .map((phase) => `<option value="${phase.id}">${escapeHtml(phase.name)}</option>`)
     .join("");
 
   if (isCategory) {
-    refs.entityPhaseSelect.value = currentEntity?.phaseId ?? config.phaseId ?? state.workspace.phases[0]?.id ?? "";
+    refs.entityPhaseSelect.value = phaseId;
   }
 
   syncEntityDialogCopy();
@@ -795,10 +1214,10 @@ async function handleEntitySubmit(event) {
       () =>
         dialogState.mode === "edit"
           ? updateCategory(dialogState.id, name)
-          : createCategory({ phaseId: refs.entityPhaseSelect.value, name }),
+          : createCategory({ phaseId: dialogState.phaseMode === "global" ? refs.entityPhaseSelect.value : dialogState.phaseId, name }),
       dialogState.mode === "edit" ? "toasts.categoryUpdated" : "toasts.categoryCreated",
       () => {
-        state.ui.phaseOpen[refs.entityPhaseSelect.value] = true;
+        state.ui.phaseOpen[dialogState.phaseMode === "global" ? refs.entityPhaseSelect.value : dialogState.phaseId] = true;
       },
     );
 
@@ -823,6 +1242,88 @@ function collectPhaseOptions() {
     .join("");
 }
 
+function resolveTaskDialogFlow(config, task) {
+  if (task) {
+    return "edit";
+  }
+
+  if (config.source === "child") {
+    return "child";
+  }
+
+  if (config.source === "category") {
+    return "category";
+  }
+
+  return "global";
+}
+
+function getScopedParentTasks(phaseId, categoryId) {
+  return sortTasksForPicker(
+    state.workspace.tasks.filter((task) => task.phaseId === phaseId && task.categoryId === categoryId),
+  );
+}
+
+function collectParentTaskOptions(phaseId, categoryId, selectedParentId = "") {
+  const scopedTasks = getScopedParentTasks(phaseId, categoryId);
+  const options = [
+    `<option value="">${escapeHtml(t("placeholders.noParent"))}</option>`,
+    ...scopedTasks.map((task) => `<option value="${task.id}">${buildTaskPath(task.id)}</option>`),
+  ];
+
+  if (selectedParentId && !scopedTasks.some((task) => task.id === selectedParentId)) {
+    options.push(`<option value="${selectedParentId}">${escapeHtml(t("placeholders.noParent"))}</option>`);
+  }
+
+  return {
+    options: options.join(""),
+    taskIds: new Set(scopedTasks.map((task) => task.id)),
+  };
+}
+
+function syncTaskTimeFields() {
+  const dialogState = state.dialogs.task;
+  if (!dialogState) {
+    return;
+  }
+
+  const timeMode = refs.taskTimeModeSelect.value;
+  const dateEnabled = isDateMode(timeMode);
+  const dateTimeEnabled = isDateTimeMode(timeMode);
+  const stopwatchEnabled = isStopwatchMode(timeMode);
+  const timerEnabled = isTimerMode(timeMode);
+  const currentTask = dialogState.taskId ? findTask(dialogState.taskId) : null;
+  const trackedMs = currentTask ? getLiveTrackedMs(currentTask) : 0;
+  const remainingMs = currentTask ? getLiveRemainingMs(currentTask) : 0;
+
+  refs.taskDateField.classList.toggle("is-hidden", !dateEnabled);
+  refs.taskDateTimeField.classList.toggle("is-hidden", !dateTimeEnabled);
+  refs.taskTimerDurationField.classList.toggle("is-hidden", !timerEnabled);
+
+  refs.taskTrackedSummary.classList.toggle(
+    "is-hidden",
+    !(stopwatchEnabled && trackedMs > 0) && !(timerEnabled && (remainingMs > 0 || currentTask?.timerDurationMs)),
+  );
+
+  if (stopwatchEnabled && trackedMs > 0) {
+    refs.taskTrackedSummary.innerHTML = `
+      <span>${escapeHtml(t("fields.trackedTime"))}</span>
+      <strong>${escapeHtml(formatDuration(trackedMs))}</strong>
+    `;
+    return;
+  }
+
+  if (timerEnabled && (remainingMs > 0 || currentTask?.timerDurationMs)) {
+    refs.taskTrackedSummary.innerHTML = `
+      <span>${escapeHtml(t("fields.remainingTime"))}</span>
+      <strong>${escapeHtml(formatDuration(remainingMs || currentTask?.timerDurationMs || 0))}</strong>
+    `;
+    return;
+  }
+
+  refs.taskTrackedSummary.innerHTML = "";
+}
+
 function syncTaskDialogCopy() {
   const dialogState = state.dialogs.task;
   if (!dialogState) {
@@ -836,6 +1337,8 @@ function syncTaskDialogCopy() {
         ? "dialogs.task.edit"
         : "dialogs.task.new",
   );
+  syncTaskDialogMode();
+  syncTaskTimeFields();
 }
 
 function collectDescendantIds(taskId) {
@@ -881,7 +1384,7 @@ function collectDisallowedDependencyIds(dialogState) {
     return disallowed;
   }
 
-  if (dialogState.flow === "child" && dialogState.context.parentTaskId) {
+  if (dialogState.context.parentTaskId) {
     let current = dialogState.context.parentTaskId;
     while (current) {
       disallowed.add(current);
@@ -904,7 +1407,7 @@ function openTaskDialog(config = {}) {
   const firstCategory = getFirstCategory();
   const fallbackPhaseId = defaults.phaseId ?? task?.phaseId ?? firstPhaseWithCategories?.id ?? "";
   const fallbackCategoryId = defaults.categoryId ?? task?.categoryId ?? firstCategory?.id ?? "";
-  const flow = task ? "edit" : defaults.parentTaskId ? "child" : "root";
+  const flow = resolveTaskDialogFlow(config, task);
   const parentTaskId = task?.parentTaskId ?? defaults.parentTaskId ?? null;
   const lockedDependencyIds = [...new Set(defaults.lockedDependencyIds ?? [])];
   const dependencyIds = [...new Set([...(task?.dependencyIds ?? defaults.dependencyIds ?? []), ...lockedDependencyIds])];
@@ -924,15 +1427,22 @@ function openTaskDialog(config = {}) {
   };
 
   refs.taskTitleInput.value = task?.title ?? "";
+  const noAssignee = task ? Boolean(task.noAssignee) : Boolean(defaults.noAssignee);
+  refs.taskAssigneeModeAssigned.checked = !noAssignee;
+  refs.taskAssigneeModeNone.checked = noAssignee;
   syncTaskAssigneeOptions(task?.assigneeId ?? defaults.assigneeId ?? "");
   refs.taskDescriptionInput.value = task?.description ?? "";
   refs.taskPrioritySelect.value = task?.priority ?? "medium";
+  refs.taskTimeModeSelect.value = task?.timeMode ?? defaults.timeMode ?? "none";
+  refs.taskDateInput.value = task?.dueDate ? toDateInputValue(task.dueDate) : "";
+  refs.taskDueInput.value = task?.dueAt ? toDateTimeLocalValue(task.dueAt) : "";
+  refs.taskTimerDurationInput.value = task?.timerDurationMs ? msToWholeMinutes(task.timerDurationMs) : "";
   refs.taskNotesInput.value = task?.notes ?? "";
   refs.taskDependencySearch.value = "";
   refs.taskPhaseSelect.innerHTML = collectPhaseOptions();
   refs.taskPhaseSelect.value = fallbackPhaseId;
-  refs.taskContextSection.classList.toggle("is-hidden", flow === "root");
-  refs.taskScopeSection.classList.toggle("is-hidden", flow !== "root");
+  refs.taskContextSection.classList.toggle("is-hidden", flow === "global");
+  refs.taskScopeSection.classList.toggle("is-hidden", flow !== "global");
 
   syncTaskDialogCopy();
   syncTaskDialogScopedOptions();
@@ -946,9 +1456,9 @@ function syncTaskDialogScopedOptions() {
     return;
   }
 
-  const selectedPhaseId = dialogState.flow === "root" ? refs.taskPhaseSelect.value : dialogState.context.phaseId;
+  const selectedPhaseId = dialogState.flow === "global" ? refs.taskPhaseSelect.value : dialogState.context.phaseId;
   const categories = getPhaseCategories(selectedPhaseId);
-  const selectedCategoryBefore = dialogState.flow === "root"
+  const selectedCategoryBefore = dialogState.flow === "global"
     ? (refs.taskCategorySelect.value || dialogState.context.categoryId)
     : dialogState.context.categoryId;
 
@@ -963,13 +1473,22 @@ function syncTaskDialogScopedOptions() {
     : categories[0]?.id ?? "";
 
   refs.taskCategorySelect.value = resolvedCategoryId;
-  if (dialogState.flow === "root") {
+  if (dialogState.flow === "global") {
     dialogState.context.phaseId = selectedPhaseId;
     dialogState.context.categoryId = resolvedCategoryId;
-    dialogState.context.parentTaskId = null;
+    const { options, taskIds } = collectParentTaskOptions(selectedPhaseId, resolvedCategoryId, refs.taskParentSelect.value || dialogState.context.parentTaskId || "");
+    refs.taskParentSelect.innerHTML = options;
+    const resolvedParentTaskId = taskIds.has(refs.taskParentSelect.value || dialogState.context.parentTaskId || "")
+      ? (refs.taskParentSelect.value || dialogState.context.parentTaskId || "")
+      : "";
+    refs.taskParentSelect.value = resolvedParentTaskId;
+    dialogState.context.parentTaskId = resolvedParentTaskId || null;
+  } else {
+    refs.taskParentSelect.innerHTML = `<option value="">${escapeHtml(t("placeholders.noParent"))}</option>`;
+    refs.taskParentSelect.value = "";
   }
 
-  refs.taskContextGrid.innerHTML = dialogState.flow === "root"
+  refs.taskContextGrid.innerHTML = dialogState.flow === "global"
     ? ""
     : [
         renderContextItem(t("fields.phase"), escapeHtml(findPhase(dialogState.context.phaseId)?.name ?? t("labels.noPhase"))),
@@ -1024,9 +1543,13 @@ function renderDependencyOptions() {
   const selectedIds = new Set(dialogState.dependencyIds);
   const lockedIds = new Set(dialogState.lockedDependencyIds);
   const disallowedIds = collectDisallowedDependencyIds(dialogState);
+  const restrictToContextCategory = dialogState.mode === "create" && ["category", "child"].includes(dialogState.flow);
   const tasks = sortTasksForPicker(
     state.workspace.tasks.filter((task) => {
       if (task.id === currentTaskId || disallowedIds.has(task.id)) {
+        return false;
+      }
+      if (restrictToContextCategory && (task.phaseId !== dialogState.context.phaseId || task.categoryId !== dialogState.context.categoryId)) {
         return false;
       }
       if (!filterValue) {
@@ -1079,24 +1602,57 @@ async function handleTaskSubmit(event) {
     return;
   }
 
-  if (!refs.taskCategorySelect.value) {
+  if (!(dialogState.flow === "global" ? refs.taskCategorySelect.value : dialogState.context.categoryId)) {
     showToastKey("toasts.categoryRequired", "error");
+    return;
+  }
+
+  const noAssignee = refs.taskAssigneeModeNone.checked;
+  if (!noAssignee && !refs.taskAssigneeSelect.value) {
+    showToastKey("toasts.assigneeRequired", "error");
     return;
   }
 
   const payload = {
     title,
-    assigneeId: refs.taskAssigneeSelect.value || null,
-    description: refs.taskDescriptionInput.value.trim(),
+    assigneeId: noAssignee ? null : (refs.taskAssigneeSelect.value || null),
+    noAssignee,
     priority: refs.taskPrioritySelect.value,
-    notes: refs.taskNotesInput.value.trim(),
-    dependencyIds: dialogState.dependencyIds,
   };
 
   if (dialogState.mode === "create") {
-    payload.phaseId = dialogState.flow === "root" ? refs.taskPhaseSelect.value : dialogState.context.phaseId;
-    payload.categoryId = dialogState.flow === "root" ? refs.taskCategorySelect.value : dialogState.context.categoryId;
-    payload.parentTaskId = dialogState.flow === "child" ? dialogState.context.parentTaskId : null;
+    payload.phaseId = dialogState.flow === "global" ? refs.taskPhaseSelect.value : dialogState.context.phaseId;
+    payload.categoryId = dialogState.flow === "global" ? refs.taskCategorySelect.value : dialogState.context.categoryId;
+    payload.parentTaskId = dialogState.flow === "global"
+      ? (refs.taskParentSelect.value || null)
+      : dialogState.flow === "child"
+        ? dialogState.context.parentTaskId
+        : null;
+    if (dialogState.dependencyIds.length) {
+      payload.dependencyIds = dialogState.dependencyIds;
+    }
+  } else {
+    const timeMode = refs.taskTimeModeSelect.value;
+    if (timeMode === "date" && !refs.taskDateInput.value) {
+      showToastKey("toasts.dateRequired", "error");
+      return;
+    }
+    if (timeMode === "datetime" && !refs.taskDueInput.value) {
+      showToastKey("toasts.dateTimeRequired", "error");
+      return;
+    }
+    if (timeMode === "timer" && !minutesToMs(refs.taskTimerDurationInput.value)) {
+      showToastKey("toasts.timerDurationRequired", "error");
+      return;
+    }
+
+    payload.description = refs.taskDescriptionInput.value.trim();
+    payload.timeMode = timeMode;
+    payload.dueDate = fromDateInputValue(refs.taskDateInput.value);
+    payload.dueAt = fromDateTimeLocalValue(refs.taskDueInput.value);
+    payload.timerDurationMs = minutesToMs(refs.taskTimerDurationInput.value);
+    payload.notes = refs.taskNotesInput.value.trim();
+    payload.dependencyIds = dialogState.dependencyIds;
   }
 
   const ok = await performMutation(
@@ -1283,8 +1839,28 @@ async function handleStatusCycle(taskId) {
   );
 }
 
-function confirmWithBrowser(key) {
-  return window.confirm(t(key));
+async function handleTaskTimerAction(taskId, action) {
+  if (!findTask(taskId)) {
+    return;
+  }
+
+  if (action === "start") {
+    await performMutation(() => startTaskTimer(taskId), "toasts.timerStarted");
+    return;
+  }
+
+  if (action === "pause") {
+    await performMutation(() => pauseTaskTimer(taskId), "toasts.timerPaused");
+    return;
+  }
+
+  if (action === "reset") {
+    await performMutation(() => resetTaskTimer(taskId), "toasts.timerReset");
+  }
+}
+
+function confirmWithBrowser(key, params) {
+  return window.confirm(t(key, params));
 }
 
 function setAllOpen(value) {
@@ -1324,10 +1900,18 @@ async function handleDocumentClick(event) {
         showToastKey("toasts.needPhaseFirst", "error");
         return;
       }
-      openEntityDialog({ type: "category", mode: "create", phaseId: phaseId || state.workspace.phases[0].id });
+      openEntityDialog({
+        type: "category",
+        mode: "create",
+        source: phaseId ? "phase" : "global",
+        phaseId: phaseId || state.workspace.phases[0].id,
+      });
       break;
     case "create-task":
-      openTaskDialog({ defaults: { phaseId, categoryId } });
+      openTaskDialog({
+        source: categoryId ? "category" : "global",
+        defaults: { phaseId, categoryId },
+      });
       break;
     case "create-child-task": {
       const parent = findTask(taskId);
@@ -1335,6 +1919,7 @@ async function handleDocumentClick(event) {
         return;
       }
       openTaskDialog({
+        source: "child",
         defaults: {
           phaseId: parent.phaseId,
           categoryId: parent.categoryId,
@@ -1345,6 +1930,9 @@ async function handleDocumentClick(event) {
     }
     case "open-task-detail":
       openDetailDialog("task", taskId);
+      break;
+    case "open-task-time":
+      openTimeDialog(taskId);
       break;
     case "open-phase-detail":
       openDetailDialog("phase", phaseId);
@@ -1408,11 +1996,23 @@ async function handleDocumentClick(event) {
     case "cycle-status":
       await handleStatusCycle(taskId);
       break;
+    case "start-task-timer":
+      await handleTaskTimerAction(taskId, "start");
+      break;
+    case "pause-task-timer":
+      await handleTaskTimerAction(taskId, "pause");
+      break;
+    case "reset-task-timer":
+      await handleTaskTimerAction(taskId, "reset");
+      break;
     case "export-json":
       await handleExport();
       break;
     case "import-json":
       refs.importFile.click();
+      break;
+    case "reset-map-progress":
+      await handleResetMapProgress();
       break;
     case "reset-workspace":
       await handleResetWorkspace();
@@ -1424,11 +2024,13 @@ async function handleDocumentClick(event) {
       setAllOpen(false);
       break;
     case "close-entity-dialog":
-      closeDialog(refs.entityDialog);
-      state.dialogs.entity = null;
+      closeEntityDialog();
       break;
     case "close-detail-dialog":
       closeDetailDialog();
+      break;
+    case "close-time-dialog":
+      closeTimeDialog();
       break;
     case "close-settings-dialog":
       closeSettingsDialog();
@@ -1482,9 +2084,15 @@ async function handleDocumentClick(event) {
       }
       const currentPhaseId = state.dialogs.detail.id;
       closeDetailDialog();
-      openEntityDialog({ type: "category", mode: "create", phaseId: currentPhaseId });
+      openEntityDialog({ type: "category", mode: "create", source: "phase", phaseId: currentPhaseId });
       break;
     }
+    case "detail-reset-phase-progress":
+      if (state.dialogs.detail?.type !== "phase") {
+        return;
+      }
+      await handleResetPhaseProgress(state.dialogs.detail.id);
+      break;
     case "detail-create-task": {
       if (state.dialogs.detail?.type !== "category") {
         return;
@@ -1495,9 +2103,18 @@ async function handleDocumentClick(event) {
         return;
       }
       closeDetailDialog();
-      openTaskDialog({ defaults: { phaseId: category.phaseId, categoryId: currentCategoryId } });
+      openTaskDialog({
+        source: "category",
+        defaults: { phaseId: category.phaseId, categoryId: currentCategoryId },
+      });
       break;
     }
+    case "detail-reset-category-progress":
+      if (state.dialogs.detail?.type !== "category") {
+        return;
+      }
+      await handleResetCategoryProgress(state.dialogs.detail.id);
+      break;
     case "detail-edit-phase":
       if (state.dialogs.detail?.type !== "phase") {
         return;
@@ -1570,6 +2187,7 @@ async function handleDocumentClick(event) {
       }
       closeDetailDialog();
       openTaskDialog({
+        source: "child",
         defaults: {
           phaseId: parent.phaseId,
           categoryId: parent.categoryId,
@@ -1578,6 +2196,12 @@ async function handleDocumentClick(event) {
       });
       break;
     }
+    case "detail-reset-root-task-progress":
+      if (state.dialogs.detail?.type !== "task") {
+        return;
+      }
+      await handleResetRootTaskProgress(state.dialogs.detail.id);
+      break;
     case "detail-edit-task": {
       if (state.dialogs.detail?.type !== "task") {
         return;
@@ -1588,6 +2212,18 @@ async function handleDocumentClick(event) {
       }
       closeDetailDialog();
       openTaskDialog({ taskId: currentTaskId });
+      break;
+    }
+    case "detail-open-time": {
+      if (state.dialogs.detail?.type !== "task") {
+        return;
+      }
+      const currentTaskId = state.dialogs.detail.id;
+      if (!currentTaskId) {
+        return;
+      }
+      closeDetailDialog();
+      openTimeDialog(currentTaskId);
       break;
     }
     case "detail-move-task": {
@@ -1615,16 +2251,13 @@ async function handleDocumentClick(event) {
       break;
     }
     case "close-task-dialog":
-      closeDialog(refs.taskDialog);
-      state.dialogs.task = null;
+      closeTaskDialog();
       break;
     case "close-move-dialog":
-      closeDialog(refs.moveDialog);
-      state.dialogs.move = null;
+      closeMoveDialog();
       break;
     case "close-delete-dialog":
-      closeDialog(refs.deleteDialog);
-      state.dialogs.delete = null;
+      closeDeleteDialog();
       break;
     default:
       break;
@@ -1683,6 +2316,50 @@ async function handleResetWorkspace() {
   );
 }
 
+async function handleResetMapProgress() {
+  if (!confirmWithBrowser("confirms.resetMapProgress")) {
+    return;
+  }
+
+  await performMutation(
+    () => resetMapProgress(),
+    "toasts.mapProgressReset",
+  );
+}
+
+async function handleResetPhaseProgress(phaseId) {
+  if (!phaseId || !confirmWithBrowser("confirms.resetPhaseProgress")) {
+    return;
+  }
+
+  await performMutation(
+    () => resetPhaseProgress(phaseId),
+    "toasts.phaseProgressReset",
+  );
+}
+
+async function handleResetCategoryProgress(categoryId) {
+  if (!categoryId || !confirmWithBrowser("confirms.resetCategoryProgress")) {
+    return;
+  }
+
+  await performMutation(
+    () => resetCategoryProgress(categoryId),
+    "toasts.categoryProgressReset",
+  );
+}
+
+async function handleResetRootTaskProgress(taskId) {
+  if (!taskId || !confirmWithBrowser("confirms.resetBranchProgress")) {
+    return;
+  }
+
+  await performMutation(
+    () => resetRootTaskProgress(taskId),
+    "toasts.branchProgressReset",
+  );
+}
+
 function handleDependencyListChange(event) {
   const checkbox = event.target.closest('input[type="checkbox"]');
   if (!checkbox || !state.dialogs.task) {
@@ -1707,6 +2384,7 @@ function handleDependencyListChange(event) {
 
 function syncOpenDialogCopy() {
   syncDetailDialog();
+  syncTimeDialog();
   syncEntityDialogCopy();
   if (state.dialogs.task) {
     syncTaskDialogCopy();
@@ -1751,12 +2429,41 @@ async function init() {
   refs.moveForm.addEventListener("submit", handleMoveSubmit);
   refs.assigneeForm.addEventListener("submit", handleAssigneeSubmit);
   refs.deleteForm.addEventListener("submit", handleDeleteSubmit);
+  refs.detailDialog.addEventListener("close", () => {
+    state.dialogs.detail = null;
+  });
+  refs.timeDialog.addEventListener("close", () => {
+    state.dialogs.time = null;
+  });
+  refs.entityDialog.addEventListener("close", () => {
+    state.dialogs.entity = null;
+  });
+  refs.taskDialog.addEventListener("close", () => {
+    state.dialogs.task = null;
+  });
+  refs.moveDialog.addEventListener("close", () => {
+    state.dialogs.move = null;
+  });
   refs.settingsDialog.addEventListener("close", () => {
     state.dialogs.settings = null;
+  });
+  refs.deleteDialog.addEventListener("close", () => {
+    state.dialogs.delete = null;
   });
   refs.importFile.addEventListener("change", handleImportFile);
   refs.taskPhaseSelect.addEventListener("change", syncTaskDialogScopedOptions);
   refs.taskCategorySelect.addEventListener("change", syncTaskDialogScopedOptions);
+  refs.taskParentSelect.addEventListener("change", () => {
+    if (!state.dialogs.task) {
+      return;
+    }
+
+    state.dialogs.task.context.parentTaskId = refs.taskParentSelect.value || null;
+    renderDependencyOptions();
+  });
+  refs.taskAssigneeModeAssigned.addEventListener("change", syncTaskAssigneeState);
+  refs.taskAssigneeModeNone.addEventListener("change", syncTaskAssigneeState);
+  refs.taskTimeModeSelect.addEventListener("change", syncTaskTimeFields);
   refs.movePhaseSelect.addEventListener("change", syncMoveDialogScopedOptions);
   refs.moveCategorySelect.addEventListener("change", syncMoveDialogScopedOptions);
   refs.taskDependencySearch.addEventListener("input", () => {

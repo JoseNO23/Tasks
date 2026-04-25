@@ -1,3 +1,5 @@
+import { resolveEffectiveStatus } from "./task-map-constants.js";
+
 export function buildWorkspaceView(snapshot) {
   const tasksById = new Map(snapshot.tasks.map((task) => [task.id, task]));
   const assigneesById = new Map(snapshot.assignees.map((assignee) => [assignee.id, assignee]));
@@ -36,20 +38,16 @@ export function buildWorkspaceView(snapshot) {
       return tasksById.get(dependencyId)?.status !== "completed";
     });
     const parentStatus = task.parentTaskId ? resolveTaskStatus(task.parentTaskId) : null;
-    const hierarchyBlocked = Boolean(
-      parentStatus && !["in_progress", "completed"].includes(parentStatus.effectiveStatus),
-    );
-    const isOperationallyBlocked = blockedByIds.length > 0 || hierarchyBlocked;
-    const effectiveStatus = task.status === "discarded"
-      ? "discarded"
-      : isOperationallyBlocked
-        ? "blocked"
-        : task.status;
+    const parentEffectiveStatus = parentStatus?.effectiveStatus ?? null;
+    const hierarchyBlocked = parentEffectiveStatus !== null
+      && parentEffectiveStatus !== "discarded"
+      && !["in_progress", "completed"].includes(parentEffectiveStatus);
+    const effectiveStatus = resolveEffectiveStatus(task.status, parentEffectiveStatus, blockedByIds.length > 0);
 
     const resolved = {
       blockedByIds,
       hierarchyBlocked,
-      isOperationallyBlocked,
+      isOperationallyBlocked: blockedByIds.length > 0 || hierarchyBlocked,
       effectiveStatus,
     };
     statusByTaskId.set(taskId, resolved);

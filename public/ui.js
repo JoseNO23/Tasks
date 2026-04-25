@@ -1,3 +1,5 @@
+import { getTaskTimeState, getTimeIconSvg } from "./task-time.js";
+
 export function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -98,6 +100,65 @@ export function renderStats(workspace, t) {
     .join("");
 }
 
+function getChevronSvg() {
+  return `
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M6 3.5 10.5 8 6 12.5" />
+    </svg>
+  `;
+}
+
+function renderTreeToggle({ isOpen, action, taskId, phaseId, categoryId, label, disabled = false }) {
+  if (disabled) {
+    return `<span class="tree-spacer" aria-hidden="true"></span>`;
+  }
+
+  const dataAttributes = [
+    `data-action="${action}"`,
+    taskId ? `data-task-id="${taskId}"` : "",
+    phaseId ? `data-phase-id="${phaseId}"` : "",
+    categoryId ? `data-category-id="${categoryId}"` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return `
+    <button
+      class="tree-toggle ${isOpen ? "is-open" : ""}"
+      type="button"
+      ${dataAttributes}
+      aria-label="${escapeHtml(label)}"
+      title="${escapeHtml(label)}"
+    >
+      ${getChevronSvg()}
+    </button>
+  `;
+}
+
+function renderTaskTimeIndicator(task, t) {
+  const timeState = getTaskTimeState(task);
+  if (!timeState.hasTime) {
+    return "";
+  }
+
+  const label = t("aria.openTime");
+  const title = `${t(`time.mode.${timeState.mode}`)} · ${t(timeState.stateKey)}`;
+
+  return `
+    <button
+      class="time-indicator-button tone-${timeState.tone}"
+      type="button"
+      data-action="open-task-time"
+      data-task-id="${task.id}"
+      data-time-indicator-for="${task.id}"
+      aria-label="${escapeHtml(label)}"
+      title="${escapeHtml(title)}"
+    >
+      ${getTimeIconSvg(timeState.icon)}
+    </button>
+  `;
+}
+
 function renderTask(task, indexes, filters, uiState, visibilityCache, t) {
   const visibleChildren = task.childIds
     .map((childId) => indexes.tasksById.get(childId))
@@ -112,7 +173,9 @@ function renderTask(task, indexes, filters, uiState, visibilityCache, t) {
   const isOpen = searchIsActive || Boolean(uiState.taskOpen[task.id]);
   const statusClass = task.effectiveStatus;
   const disableStatusAction = task.effectiveStatus === "blocked";
-  const toggleLabel = task.childIds.length ? t("aria.toggleChildren") : t("aria.noChildren");
+  const toggleLabel = task.childIds.length
+    ? isOpen ? t("aria.collapseTask") : t("aria.expandTask")
+    : t("aria.noChildren");
   const statusTitle = disableStatusAction ? t("errors.blockedStatus") : t("aria.changeStatus");
   const nodeClasses = [
     "task-node",
@@ -127,17 +190,13 @@ function renderTask(task, indexes, filters, uiState, visibilityCache, t) {
   return `
     <article class="task-row ${task.childIds.length ? "has-children" : ""}">
       <div class="${nodeClasses}">
-        <button
-          class="tree-toggle ${task.childIds.length ? "" : "is-leaf"}"
-          type="button"
-          data-action="toggle-task"
-          data-task-id="${task.id}"
-          ${task.childIds.length ? "" : "disabled"}
-          aria-label="${escapeHtml(toggleLabel)}"
-          title="${escapeHtml(toggleLabel)}"
-        >
-          ${task.childIds.length ? (isOpen ? "–" : "+") : "·"}
-        </button>
+        ${renderTreeToggle({
+          isOpen,
+          action: "toggle-task",
+          taskId: task.id,
+          label: toggleLabel,
+          disabled: !task.childIds.length,
+        })}
 
         <button
           class="status-button status-${statusClass}"
@@ -167,10 +226,13 @@ function renderTask(task, indexes, filters, uiState, visibilityCache, t) {
             <span class="badge status-${statusClass}">${escapeHtml(statusLabel(t, statusClass))}</span>
             <span class="badge priority-${task.priority}">${escapeHtml(priorityLabel(t, task.priority))}</span>
             ${task.assignee ? `<span class="meta-pill">@ ${escapeHtml(task.assignee)}</span>` : ""}
+            ${task.noAssignee ? `<span class="meta-pill no-assignee-pill">${escapeHtml(t("labels.noAssignee"))}</span>` : ""}
             ${task.assignee && task.assigneeActive === false ? `<span class="meta-pill">${escapeHtml(t("labels.inactive"))}</span>` : ""}
             ${task.childIds.length ? `<span class="meta-pill">${escapeHtml(t("count.child", { count: task.childIds.length }))}</span>` : ""}
           </div>
         </button>
+
+        ${renderTaskTimeIndicator(task, t)}
 
         <button
           class="icon-button detail-trigger"
@@ -254,9 +316,12 @@ export function renderMap(workspace, filters, uiState, t) {
           return `
             <article class="category-card">
               <header class="category-header">
-                <button class="tree-toggle" type="button" data-action="toggle-category" data-category-id="${category.id}" aria-label="${escapeHtml(t("aria.toggleCategory"))}" title="${escapeHtml(t("aria.toggleCategory"))}">
-                  ${categoryOpen ? "–" : "+"}
-                </button>
+                ${renderTreeToggle({
+                  isOpen: categoryOpen,
+                  action: "toggle-category",
+                  categoryId: category.id,
+                  label: categoryOpen ? t("aria.collapseCategory") : t("aria.expandCategory"),
+                })}
 
                 <button
                   class="section-open category-open"
@@ -313,9 +378,12 @@ export function renderMap(workspace, filters, uiState, t) {
       return `
         <section class="phase-card">
           <header class="phase-header">
-            <button class="tree-toggle" type="button" data-action="toggle-phase" data-phase-id="${phase.id}" aria-label="${escapeHtml(t("aria.togglePhase"))}" title="${escapeHtml(t("aria.togglePhase"))}">
-              ${phaseOpen ? "–" : "+"}
-            </button>
+            ${renderTreeToggle({
+              isOpen: phaseOpen,
+              action: "toggle-phase",
+              phaseId: phase.id,
+              label: phaseOpen ? t("aria.collapsePhase") : t("aria.expandPhase"),
+            })}
 
             <button
               class="section-open phase-open"

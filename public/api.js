@@ -39,6 +39,12 @@ export function importSnapshot(snapshot) {
   });
 }
 
+export function resetMapProgress() {
+  return request("/api/progress/reset", {
+    method: "POST",
+  });
+}
+
 export function createPhase(name) {
   return request("/api/phases", {
     method: "POST",
@@ -66,6 +72,12 @@ export function deletePhase(phaseId) {
   });
 }
 
+export function resetPhaseProgress(phaseId) {
+  return request(`/api/phases/${phaseId}/progress/reset`, {
+    method: "POST",
+  });
+}
+
 export function createCategory(payload) {
   return request("/api/categories", {
     method: "POST",
@@ -90,6 +102,12 @@ export function moveCategory(categoryId, direction) {
 export function deleteCategory(categoryId) {
   return request(`/api/categories/${categoryId}`, {
     method: "DELETE",
+  });
+}
+
+export function resetCategoryProgress(categoryId) {
+  return request(`/api/categories/${categoryId}/progress/reset`, {
+    method: "POST",
   });
 }
 
@@ -131,6 +149,30 @@ export function setTaskStatus(taskId, status) {
   return request(`/api/tasks/${taskId}/status`, {
     method: "POST",
     body: { status },
+  });
+}
+
+export function startTaskTimer(taskId) {
+  return request(`/api/tasks/${taskId}/timer/start`, {
+    method: "POST",
+  });
+}
+
+export function pauseTaskTimer(taskId) {
+  return request(`/api/tasks/${taskId}/timer/pause`, {
+    method: "POST",
+  });
+}
+
+export function resetTaskTimer(taskId) {
+  return request(`/api/tasks/${taskId}/timer/reset`, {
+    method: "POST",
+  });
+}
+
+export function resetRootTaskProgress(taskId) {
+  return request(`/api/tasks/${taskId}/progress/reset`, {
+    method: "POST",
   });
 }
 

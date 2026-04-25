@@ -1,5 +1,17 @@
 import { AppError } from "../utils/errors.js";
-import { TASK_PRIORITIES, TASK_STATUSES } from "./task-map-constants.js";
+import {
+  DEFAULTS,
+  TASK_PRIORITIES,
+  TASK_STATUSES,
+  TASK_TIME_MODES,
+  isTerminalStatus,
+  resolveEffectiveStatus,
+  taskUsesDate,
+  taskUsesDateTime,
+  taskUsesStopwatch,
+  taskUsesTimer,
+  taskUsesLiveClock,
+} from "./task-map-constants.js";
 
 function asTrimmedString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -7,6 +19,81 @@ function asTrimmedString(value) {
 
 function asCatalogName(value) {
   return asTrimmedString(value).replace(/\s+/g, " ");
+}
+
+function asOptionalPositiveInteger(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new AppError(400, "invalid_number", "Expected a positive integer.");
+  }
+
+  return parsed;
+}
+
+function asNonNegativeInteger(value, fallback = 0) {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new AppError(400, "invalid_number", "Expected a non-negative integer.");
+  }
+
+  return parsed;
+}
+
+function asIsoDateTime(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new AppError(400, "invalid_datetime", "Expected a valid date and time.");
+  }
+
+  return date.toISOString();
+}
+
+function asDateOnly(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const normalized = asTrimmedString(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    throw new AppError(400, "invalid_date", "Expected a valid date.");
+  }
+
+  const [year, month, day] = normalized.split("-").map(Number);
+  const probe = new Date(year, month - 1, day);
+  if (
+    Number.isNaN(probe.getTime())
+    || probe.getFullYear() !== year
+    || probe.getMonth() !== month - 1
+    || probe.getDate() !== day
+  ) {
+    throw new AppError(400, "invalid_date", "Expected a valid date.");
+  }
+
+  return normalized;
+}
+
+function asBoolean(value, fallback = false) {
+  return value === undefined ? fallback : Boolean(value);
+}
+
+function asTimeMode(value, fallback = DEFAULTS.timeMode) {
+  const mode = asTrimmedString(value || fallback);
+  if (!TASK_TIME_MODES.includes(mode)) {
+    throw new AppError(400, "invalid_time_mode", "Time mode is invalid.");
+  }
+  return mode;
 }
 
 function ensureArray(value, fieldName) {
@@ -171,7 +258,7 @@ function ensureCompletedSubtrees(taskMap) {
     while (queue.length) {
       const currentId = queue.shift();
       const current = taskMap.get(currentId);
-      if (current.status !== "completed") {
+      if (!isTerminalStatus(current.status)) {
         return true;
       }
       queue.push(...(childIdsByParent.get(currentId) ?? []));
@@ -191,6 +278,32 @@ function ensureCompletedSubtrees(taskMap) {
   }
 }
 
+function resolveOperationalState(taskMap, taskId, cache = new Map()) {
+  if (cache.has(taskId)) {
+    return cache.get(taskId);
+  }
+
+  const task = taskMap.get(taskId);
+  const blockedByIds = task.dependencyIds.filter((dependencyId) => {
+    return taskMap.get(dependencyId)?.status !== "completed";
+  });
+  const parentState = task.parentTaskId ? resolveOperationalState(taskMap, task.parentTaskId, cache) : null;
+  const parentEffectiveStatus = parentState?.effectiveStatus ?? null;
+  const hierarchyBlocked = parentEffectiveStatus !== null
+    && parentEffectiveStatus !== "discarded"
+    && !["in_progress", "completed"].includes(parentEffectiveStatus);
+  const effectiveStatus = resolveEffectiveStatus(task.status, parentEffectiveStatus, blockedByIds.length > 0);
+
+  const resolved = {
+    blockedByIds,
+    hierarchyBlocked,
+    effectiveStatus,
+  };
+
+  cache.set(taskId, resolved);
+  return resolved;
+}
+
 function collectBlockedBy(task, taskMap) {
   return task.dependencyIds.filter((dependencyId) => {
     const dependency = taskMap.get(dependencyId);
@@ -206,6 +319,79 @@ export function normalizeTaskInput(input, options = {}) {
     ? input.dependencyIds.map((item) => asTrimmedString(item)).filter(Boolean)
     : [];
 
+  const status = asTrimmedString(input.status || previous?.status || DEFAULTS.status);
+  const priority = asTrimmedString(input.priority || previous?.priority || DEFAULTS.priority);
+  const timeMode = asTimeMode(
+    Object.prototype.hasOwnProperty.call(input, "timeMode") ? input.timeMode : previous?.timeMode,
+  );
+  const stopwatchEnabled = taskUsesStopwatch(timeMode);
+  const timerEnabled = taskUsesTimer(timeMode);
+  const dateEnabled = taskUsesDate(timeMode);
+  const dateTimeEnabled = taskUsesDateTime(timeMode);
+  const liveClockEnabled = taskUsesLiveClock(timeMode);
+  const timerRunning = liveClockEnabled
+    ? asBoolean(
+        Object.prototype.hasOwnProperty.call(input, "timerRunning") ? input.timerRunning : previous?.timerRunning,
+        false,
+      )
+    : false;
+  const timerStartedAt = liveClockEnabled && timerRunning
+    ? asIsoDateTime(
+        Object.prototype.hasOwnProperty.call(input, "timerStartedAt") ? input.timerStartedAt : previous?.timerStartedAt,
+      )
+    : null;
+  const trackedMs = stopwatchEnabled
+    ? asNonNegativeInteger(
+        Object.prototype.hasOwnProperty.call(input, "trackedMs") ? input.trackedMs : previous?.trackedMs,
+        0,
+      )
+    : 0;
+  const timerDurationMs = timerEnabled
+    ? asOptionalPositiveInteger(
+        Object.prototype.hasOwnProperty.call(input, "timerDurationMs")
+          ? input.timerDurationMs
+          : previous?.timerDurationMs,
+      )
+    : null;
+  const timerRemainingMs = timerEnabled
+    ? asNonNegativeInteger(
+        Object.prototype.hasOwnProperty.call(input, "timerRemainingMs")
+          ? input.timerRemainingMs
+          : previous?.timerRemainingMs ?? timerDurationMs,
+        timerDurationMs ?? 0,
+      )
+    : null;
+  const completedAtCandidate = asIsoDateTime(
+    Object.prototype.hasOwnProperty.call(input, "completedAt") ? input.completedAt : previous?.completedAt,
+  );
+
+  if (liveClockEnabled && timerRunning && !timerStartedAt) {
+    throw new AppError(400, "invalid_timer", "A running timer must have a valid start time.");
+  }
+  if (timerEnabled && !timerDurationMs) {
+    throw new AppError(400, "invalid_timer", "A countdown timer must have a duration.");
+  }
+  if (timerEnabled && timerRemainingMs > timerDurationMs) {
+    throw new AppError(400, "invalid_timer", "Timer remaining time cannot exceed the original duration.");
+  }
+  if (dateEnabled && !asDateOnly(Object.prototype.hasOwnProperty.call(input, "dueDate") ? input.dueDate : previous?.dueDate)) {
+    throw new AppError(400, "invalid_date", "A due date is required for date mode.");
+  }
+  if (dateTimeEnabled && !asIsoDateTime(Object.prototype.hasOwnProperty.call(input, "dueAt") ? input.dueAt : previous?.dueAt)) {
+    throw new AppError(400, "invalid_datetime", "A due date and time is required for date and time mode.");
+  }
+
+  const rawAssigneeId = asTrimmedString(
+    Object.prototype.hasOwnProperty.call(input, "assigneeId") ? input.assigneeId : previous?.assigneeId,
+  ) || null;
+
+  const inputNoAssignee = input.noAssignee;
+  const noAssignee = inputNoAssignee !== null && inputNoAssignee !== undefined
+    ? Boolean(inputNoAssignee)
+    : previous?.noAssignee !== null && previous?.noAssignee !== undefined
+      ? Boolean(previous.noAssignee)
+      : rawAssigneeId === null;
+
   return {
     id: input.id,
     title: asTrimmedString(input.title),
@@ -213,12 +399,28 @@ export function normalizeTaskInput(input, options = {}) {
     phaseId: asTrimmedString(input.phaseId),
     categoryId: asTrimmedString(input.categoryId),
     parentTaskId: asTrimmedString(input.parentTaskId) || null,
-    assigneeId: asTrimmedString(
-      Object.prototype.hasOwnProperty.call(input, "assigneeId") ? input.assigneeId : previous?.assigneeId,
-    ) || null,
+    assigneeId: noAssignee ? null : rawAssigneeId,
+    noAssignee,
     dependencyIds: [...new Set(dependencyIds)],
-    status: asTrimmedString(input.status || previous?.status || "pending"),
-    priority: asTrimmedString(input.priority || previous?.priority || "medium"),
+    status,
+    priority,
+    timeMode,
+    trackedMs,
+    timerDurationMs,
+    timerRemainingMs,
+    timerStartedAt,
+    timerRunning,
+    dueDate: dateEnabled
+      ? asDateOnly(
+          Object.prototype.hasOwnProperty.call(input, "dueDate") ? input.dueDate : previous?.dueDate,
+        )
+      : null,
+    dueAt: dateTimeEnabled
+      ? asIsoDateTime(
+          Object.prototype.hasOwnProperty.call(input, "dueAt") ? input.dueAt : previous?.dueAt,
+        )
+      : null,
+    completedAt: status === "completed" ? completedAtCandidate ?? now : null,
     notes: asTrimmedString(input.notes),
     createdAt: previous?.createdAt ?? now,
     updatedAt: now,
@@ -303,8 +505,38 @@ export function validateSnapshot(snapshot) {
     if (!TASK_PRIORITIES.includes(task.priority)) {
       throw new AppError(400, "invalid_priority", `Task "${task.title}" has an invalid priority.`);
     }
+    if (!TASK_TIME_MODES.includes(task.timeMode)) {
+      throw new AppError(400, "invalid_time_mode", `Task "${task.title}" has an invalid time mode.`);
+    }
     if (task.assigneeId && !assigneeMap.has(task.assigneeId)) {
       throw new AppError(400, "missing_assignee", `Task "${task.title}" references a missing assignee.`);
+    }
+    if (!task.noAssignee && !task.assigneeId) {
+      throw new AppError(400, "missing_assignee", `Task "${task.title}" requires an assignee, or must explicitly mark no assignee.`);
+    }
+    if (task.noAssignee && task.assigneeId) {
+      throw new AppError(400, "conflicting_assignee", `Task "${task.title}" cannot have both an assignee and the no-assignee flag.`);
+    }
+    if (task.timerRunning && !taskUsesLiveClock(task.timeMode)) {
+      throw new AppError(400, "invalid_timer", `Task "${task.title}" cannot run a live timer in its current time mode.`);
+    }
+    if (task.timerRunning && !task.timerStartedAt) {
+      throw new AppError(400, "invalid_timer", `Task "${task.title}" has a running timer without a start time.`);
+    }
+    if (task.status === "completed" && task.timerRunning) {
+      throw new AppError(400, "invalid_timer", `Task "${task.title}" cannot stay completed while its timer is running.`);
+    }
+    if (taskUsesDate(task.timeMode) && !task.dueDate) {
+      throw new AppError(400, "invalid_date", `Task "${task.title}" requires a due date.`);
+    }
+    if (taskUsesDateTime(task.timeMode) && !task.dueAt) {
+      throw new AppError(400, "invalid_datetime", `Task "${task.title}" requires a due date and time.`);
+    }
+    if (taskUsesTimer(task.timeMode) && !task.timerDurationMs) {
+      throw new AppError(400, "invalid_timer", `Task "${task.title}" requires a countdown duration.`);
+    }
+    if (taskUsesTimer(task.timeMode) && task.timerRemainingMs > task.timerDurationMs) {
+      throw new AppError(400, "invalid_timer", `Task "${task.title}" has invalid remaining countdown time.`);
     }
     taskMap.set(task.id, task);
   }
@@ -338,9 +570,10 @@ export function validateSnapshot(snapshot) {
   detectDependencyCycles(taskMap);
   ensureCompletedSubtrees(taskMap);
 
+  const effectiveStateCache = new Map();
   for (const task of taskMap.values()) {
-    const blockedBy = collectBlockedBy(task, taskMap);
-    if (blockedBy.length && (task.status === "in_progress" || task.status === "completed")) {
+    const resolved = resolveOperationalState(taskMap, task.id, effectiveStateCache);
+    if (resolved.effectiveStatus === "blocked" && (task.status === "in_progress" || task.status === "completed")) {
       throw new AppError(
         400,
         "blocked_transition",

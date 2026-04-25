@@ -216,9 +216,16 @@ select {
   gap: 10px;
 }
 
+.toolbar-view-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .button,
 .status-button,
-.icon-button {
+.icon-button,
+.time-indicator-button {
   border: 1px solid transparent;
   border-radius: 999px;
   transition: 160ms ease;
@@ -284,6 +291,7 @@ mark {
 .button:focus-visible,
 .icon-button:focus-visible,
 .status-button:focus-visible,
+.time-indicator-button:focus-visible,
 .tree-toggle:focus-visible,
 .task-open:focus-visible,
 .section-open:focus-visible,
@@ -397,6 +405,12 @@ mark {
   gap: 12px;
   align-items: center;
   margin-bottom: 14px;
+}
+
+.panel-heading-actions {
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  margin-left: 0;
 }
 
 .panel-heading h2,
@@ -557,7 +571,7 @@ mark {
   border-radius: 14px;
   padding: 10px 12px;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
   gap: 8px 10px;
   align-items: start;
   background: linear-gradient(180deg, rgba(18, 22, 29, 0.9), rgba(18, 22, 29, 0.72));
@@ -599,9 +613,45 @@ mark {
   background: var(--bg-muted);
 }
 
-.tree-toggle.is-leaf {
-  opacity: 0.45;
-  cursor: default;
+.toolbar-icon-button {
+  width: 34px;
+  height: 34px;
+  color: var(--text-secondary);
+}
+
+.toolbar-icon-button:hover {
+  color: var(--text-primary);
+}
+
+.toolbar-icon-button svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tree-toggle svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.16s ease;
+}
+
+.tree-toggle.is-open svg {
+  transform: rotate(90deg);
+}
+
+.tree-spacer {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
 }
 
 .task-node.status-pending {
@@ -696,6 +746,65 @@ mark {
   font-size: 0.84rem;
   border: 1px solid var(--border);
   background: var(--bg-soft);
+}
+
+.time-indicator-button {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(16, 19, 23, 0.76);
+  color: var(--success);
+}
+
+.time-indicator-button:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-muted);
+}
+
+.time-indicator-button svg,
+.time-summary-icon svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.time-indicator-button.tone-normal,
+.time-summary-icon.tone-normal,
+.time-state-pill.tone-normal {
+  color: var(--success);
+}
+
+.time-indicator-button.tone-warning,
+.time-summary-icon.tone-warning,
+.time-state-pill.tone-warning {
+  color: var(--accent);
+}
+
+.time-indicator-button.tone-danger,
+.time-summary-icon.tone-danger,
+.time-state-pill.tone-danger {
+  color: var(--danger);
+}
+
+.time-indicator-button.tone-active,
+.time-summary-icon.tone-active,
+.time-state-pill.tone-active {
+  color: var(--info);
+}
+
+.time-indicator-button.tone-completed,
+.time-summary-icon.tone-completed,
+.time-state-pill.tone-completed {
+  color: rgba(82, 212, 139, 0.78);
 }
 
 .badge.priority-critical {
@@ -872,6 +981,82 @@ mark {
   white-space: pre-wrap;
 }
 
+.time-summary-card {
+  gap: 14px;
+}
+
+.time-summary-stack {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.time-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.time-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.time-summary-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.time-summary-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.time-summary-copy small {
+  color: var(--text-secondary);
+}
+
+.time-detail-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(57, 66, 82, 0.64);
+  background: rgba(16, 19, 23, 0.72);
+}
+
+.time-detail-metric span {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.time-detail-metric strong {
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
+.time-state-pill {
+  border-color: currentColor;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dialog-compact {
+  width: min(560px, calc(100vw - 32px));
+}
+
 .catalog-form {
   display: flex;
   flex-wrap: wrap;
@@ -948,6 +1133,80 @@ mark {
 
 .catalog-item-row strong {
   font-size: 0.95rem;
+}
+
+.assignee-field {
+  gap: 10px;
+}
+
+.field-nested {
+  gap: 8px;
+}
+
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.choice-card {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-height: 52px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(18, 22, 29, 0.72);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.choice-card:hover {
+  border-color: rgba(227, 181, 74, 0.36);
+  background: rgba(18, 22, 29, 0.9);
+}
+
+.choice-card input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.choice-card-content {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0.8rem 0.95rem;
+}
+
+.choice-card-content strong {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.choice-card:has(input:checked) {
+  border-color: rgba(227, 181, 74, 0.54);
+  background: rgba(227, 181, 74, 0.08);
+}
+
+.choice-card:has(input:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(227, 181, 74, 0.18);
+}
+
+/* Badge shown in task detail when noAssignee is explicit */
+.no-assignee-badge {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.no-assignee-pill {
+  color: var(--text-secondary);
+  background: rgba(122, 135, 153, 0.12);
+  border-color: rgba(122, 135, 153, 0.22);
 }
 
 .catalog-empty {
@@ -1167,7 +1426,7 @@ mark {
   }
 
   .task-node {
-    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
   }
 }
 
@@ -1186,7 +1445,19 @@ mark {
     width: 100%;
   }
 
+  .panel-heading {
+    align-items: flex-start;
+  }
+
+  .panel-heading-actions {
+    margin-left: 0;
+  }
+
   .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .time-detail-grid {
     grid-template-columns: 1fr;
   }
 

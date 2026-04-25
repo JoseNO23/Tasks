@@ -38,6 +38,13 @@ export function createApiRouter(service) {
   );
 
   router.post(
+    "/progress/reset",
+    asyncHandler(async (_req, res) => {
+      res.json({ data: await service.resetMapProgress() });
+    }),
+  );
+
+  router.post(
     "/phases",
     asyncHandler(async (req, res) => {
       res.status(201).json({ data: await service.createPhase(req.body) });
@@ -66,6 +73,13 @@ export function createApiRouter(service) {
   );
 
   router.post(
+    "/phases/:phaseId/progress/reset",
+    asyncHandler(async (req, res) => {
+      res.json({ data: await service.resetPhaseProgress(req.params.phaseId) });
+    }),
+  );
+
+  router.post(
     "/categories",
     asyncHandler(async (req, res) => {
       res.status(201).json({ data: await service.createCategory(req.body) });
@@ -90,6 +104,13 @@ export function createApiRouter(service) {
     "/categories/:categoryId",
     asyncHandler(async (req, res) => {
       res.json({ data: await service.deleteCategory(req.params.categoryId) });
+    }),
+  );
+
+  router.post(
+    "/categories/:categoryId/progress/reset",
+    asyncHandler(async (req, res) => {
+      res.json({ data: await service.resetCategoryProgress(req.params.categoryId) });
     }),
   );
 
@@ -132,6 +153,34 @@ export function createApiRouter(service) {
     "/tasks/:taskId/status",
     asyncHandler(async (req, res) => {
       res.json({ data: await service.setTaskStatus(req.params.taskId, req.body.status) });
+    }),
+  );
+
+  router.post(
+    "/tasks/:taskId/timer/start",
+    asyncHandler(async (req, res) => {
+      res.json({ data: await service.startTaskTimer(req.params.taskId) });
+    }),
+  );
+
+  router.post(
+    "/tasks/:taskId/timer/pause",
+    asyncHandler(async (req, res) => {
+      res.json({ data: await service.pauseTaskTimer(req.params.taskId) });
+    }),
+  );
+
+  router.post(
+    "/tasks/:taskId/timer/reset",
+    asyncHandler(async (req, res) => {
+      res.json({ data: await service.resetTaskTimer(req.params.taskId) });
+    }),
+  );
+
+  router.post(
+    "/tasks/:taskId/progress/reset",
+    asyncHandler(async (req, res) => {
+      res.json({ data: await service.resetRootTaskProgress(req.params.taskId) });
     }),
   );
 

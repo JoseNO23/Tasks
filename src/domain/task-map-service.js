@@ -1,7 +1,18 @@
 import { createId } from "../utils/id.js";
 import { AppError } from "../utils/errors.js";
 import { createEmptySnapshot } from "../sample/empty-snapshot.js";
-import { DEFAULTS, TASK_PRIORITIES, TASK_STATUSES } from "./task-map-constants.js";
+import {
+  DEFAULTS,
+  TASK_PRIORITIES,
+  TASK_STATUSES,
+  TASK_TIME_MODES,
+  isTerminalStatus,
+  taskUsesDate,
+  taskUsesDateTime,
+  taskUsesStopwatch,
+  taskUsesTimer,
+  taskUsesLiveClock,
+} from "./task-map-constants.js";
 import { validateSnapshot, normalizeTaskInput } from "./task-map-validators.js";
 import { buildWorkspaceView } from "./task-map-view.js";
 
@@ -42,7 +53,7 @@ function listDescendants(snapshot, rootId) {
 
 function hasIncompleteDescendants(snapshot, taskId) {
   return listDescendants(snapshot, taskId).some((descendantId) => {
-    return ensureTaskExists(snapshot, descendantId).status !== "completed";
+    return !isTerminalStatus(ensureTaskExists(snapshot, descendantId).status);
   });
 }
 
@@ -51,10 +62,128 @@ function normalizeCompletedHierarchy(snapshot) {
   for (const task of snapshot.tasks) {
     if (task.status === "completed" && hasIncompleteDescendants(snapshot, task.id)) {
       task.status = DEFAULTS.status;
+      task.completedAt = null;
       task.updatedAt = nowIso();
       changed = true;
     }
   }
+  return changed;
+}
+
+function normalizeLegacyTaskTiming(snapshot) {
+  let changed = false;
+
+  for (const task of snapshot.tasks) {
+    const before = JSON.stringify({
+      timeMode: task.timeMode,
+      dueDate: task.dueDate,
+      dueAt: task.dueAt,
+      trackedMs: task.trackedMs,
+      timerDurationMs: task.timerDurationMs,
+      timerRemainingMs: task.timerRemainingMs,
+      timerRunning: task.timerRunning,
+      timerStartedAt: task.timerStartedAt,
+      completedAt: task.completedAt,
+      estimatedMinutes: task.estimatedMinutes,
+    });
+    const hasTimeMode = Object.prototype.hasOwnProperty.call(task, "timeMode");
+    const legacyMode = hasTimeMode ? String(task.timeMode || "").trim() : DEFAULTS.timeMode;
+    let nextMode = legacyMode;
+
+    if (legacyMode === "deadline") {
+      nextMode = task.dueDate ? "date" : task.dueAt ? "datetime" : "none";
+    }
+
+    if (legacyMode === "both") {
+      nextMode = task.timerRunning || Number(task.trackedMs ?? 0) > 0
+        ? "stopwatch"
+        : task.dueDate
+          ? "date"
+          : task.dueAt
+            ? "datetime"
+            : "none";
+    }
+
+    if (!TASK_TIME_MODES.includes(nextMode)) {
+      nextMode = "none";
+    }
+
+    const nextDueDate = task.dueDate ?? null;
+    const nextDueAt = task.dueAt ?? null;
+    const nextTrackedMs = Number(task.trackedMs ?? 0);
+    const nextTimerDurationMs = Number(task.timerDurationMs ?? 0) || null;
+    const nextTimerRemainingMs = Number(task.timerRemainingMs ?? task.timerDurationMs ?? 0) || null;
+    const nextTimerRunning = Boolean(task.timerRunning);
+    const nextTimerStartedAt = task.timerStartedAt ?? null;
+    const nextCompletedAt = task.completedAt ?? null;
+
+    task.timeMode = nextMode;
+    task.dueDate = taskUsesDate(nextMode) ? nextDueDate : null;
+    task.dueAt = taskUsesDateTime(nextMode) ? nextDueAt : null;
+    task.trackedMs = taskUsesStopwatch(nextMode) ? Math.max(0, nextTrackedMs) : 0;
+    task.timerDurationMs = taskUsesTimer(nextMode) ? nextTimerDurationMs : null;
+    task.timerRemainingMs = taskUsesTimer(nextMode)
+      ? Math.max(0, nextTimerRemainingMs ?? nextTimerDurationMs ?? 0)
+      : null;
+    task.timerRunning = taskUsesLiveClock(nextMode) ? nextTimerRunning : false;
+    task.timerStartedAt = taskUsesLiveClock(nextMode) ? nextTimerStartedAt : null;
+    task.completedAt = nextCompletedAt;
+
+    if (Object.prototype.hasOwnProperty.call(task, "estimatedMinutes")) {
+      delete task.estimatedMinutes;
+    }
+
+    const after = JSON.stringify({
+      timeMode: task.timeMode,
+      dueDate: task.dueDate,
+      dueAt: task.dueAt,
+      trackedMs: task.trackedMs,
+      timerDurationMs: task.timerDurationMs,
+      timerRemainingMs: task.timerRemainingMs,
+      timerRunning: task.timerRunning,
+      timerStartedAt: task.timerStartedAt,
+      completedAt: task.completedAt,
+      estimatedMinutes: task.estimatedMinutes,
+    });
+
+    if (before !== after) {
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function normalizeDiscardedCascade(snapshot) {
+  const childIdsByParent = new Map();
+  const taskById = new Map(snapshot.tasks.map((task) => [task.id, task]));
+
+  for (const task of snapshot.tasks) {
+    if (!task.parentTaskId) continue;
+    if (!childIdsByParent.has(task.parentTaskId)) childIdsByParent.set(task.parentTaskId, []);
+    childIdsByParent.get(task.parentTaskId).push(task.id);
+  }
+
+  let changed = false;
+  const now = nowIso();
+
+  for (const task of snapshot.tasks) {
+    if (task.status !== "discarded") continue;
+    const queue = [...(childIdsByParent.get(task.id) ?? [])];
+    while (queue.length) {
+      const currentId = queue.shift();
+      const current = taskById.get(currentId);
+      if (current && current.status !== "discarded") {
+        pauseTaskTimer(current, now);
+        current.status = "discarded";
+        current.completedAt = null;
+        current.updatedAt = now;
+        changed = true;
+      }
+      queue.push(...(childIdsByParent.get(currentId) ?? []));
+    }
+  }
+
   return changed;
 }
 
@@ -166,9 +295,79 @@ function normalizeLegacyAssignees(snapshot) {
       delete task.assignee;
       changed = true;
     }
+
+    if (!Object.prototype.hasOwnProperty.call(task, "noAssignee")) {
+      task.noAssignee = !task.assigneeId;
+      changed = true;
+    }
   }
 
   return changed;
+}
+
+function getRunningTimerElapsedMs(task, referenceIso) {
+  if (!task.timerRunning || !task.timerStartedAt) {
+    return 0;
+  }
+
+  const startedAtMs = new Date(task.timerStartedAt).getTime();
+  const referenceMs = new Date(referenceIso).getTime();
+  if (Number.isNaN(startedAtMs) || Number.isNaN(referenceMs)) {
+    return 0;
+  }
+
+  return Math.max(0, referenceMs - startedAtMs);
+}
+
+function getTaskLiveRemainingMs(task, referenceIso) {
+  if (!taskUsesTimer(task.timeMode)) {
+    return null;
+  }
+
+  const base = Number(task.timerRemainingMs ?? task.timerDurationMs ?? 0);
+  if (!task.timerRunning) {
+    return Math.max(0, base);
+  }
+
+  return Math.max(0, base - getRunningTimerElapsedMs(task, referenceIso));
+}
+
+function pauseTaskTimer(task, referenceIso) {
+  if (!task.timerRunning) {
+    return false;
+  }
+
+  if (taskUsesStopwatch(task.timeMode)) {
+    task.trackedMs = (task.trackedMs ?? 0) + getRunningTimerElapsedMs(task, referenceIso);
+  }
+  if (taskUsesTimer(task.timeMode)) {
+    task.timerRemainingMs = getTaskLiveRemainingMs(task, referenceIso);
+  }
+  task.timerRunning = false;
+  task.timerStartedAt = null;
+  task.updatedAt = referenceIso;
+  return true;
+}
+
+function resetTaskTimer(task, referenceIso) {
+  if (taskUsesStopwatch(task.timeMode)) {
+    task.trackedMs = 0;
+  }
+  if (taskUsesTimer(task.timeMode)) {
+    task.timerRemainingMs = task.timerDurationMs ?? 0;
+  }
+  task.timerRunning = false;
+  task.timerStartedAt = null;
+  task.updatedAt = referenceIso;
+}
+
+function resetTaskProgressState(task, referenceIso) {
+  resetTaskTimer(task, referenceIso);
+  task.completedAt = null;
+  if (task.status !== "discarded") {
+    task.status = DEFAULTS.status;
+  }
+  task.updatedAt = referenceIso;
 }
 
 function ensureTaskCanComplete(snapshot, taskId) {
@@ -179,6 +378,32 @@ function ensureTaskCanComplete(snapshot, taskId) {
       "incomplete_descendants",
       `Task "${task.title}" cannot be completed until every descendant is completed.`,
     );
+  }
+}
+
+function ensureTaskHasLiveClock(task) {
+  if (!taskUsesLiveClock(task.timeMode)) {
+    throw new AppError(400, "timer_not_enabled", "This task does not use a live clock.");
+  }
+}
+
+function ensureTaskCanRunTimer(snapshot, taskId) {
+  const workspace = buildWorkspaceView(snapshot);
+  const task = workspace.tasks.find((item) => item.id === taskId);
+  if (!task) {
+    throw new AppError(404, "task_not_found", "Task not found.");
+  }
+  if (task.effectiveStatus === "blocked") {
+    throw new AppError(400, "blocked_transition", "This task is still blocked.");
+  }
+  if (task.status === "completed") {
+    throw new AppError(400, "completed_task", "Completed tasks cannot keep a running timer.");
+  }
+  if (task.status === "discarded") {
+    throw new AppError(400, "discarded_task", "Discarded tasks cannot run a timer.");
+  }
+  if (taskUsesTimer(task.timeMode) && getTaskLiveRemainingMs(task, nowIso()) <= 0) {
+    throw new AppError(400, "timer_expired", "Reset the timer before starting it again.");
   }
 }
 
@@ -214,6 +439,14 @@ function ensureAssigneeExists(snapshot, assigneeId) {
   return assignee;
 }
 
+function ensureRootTaskExists(snapshot, taskId) {
+  const task = ensureTaskExists(snapshot, taskId);
+  if (task.parentTaskId) {
+    throw new AppError(400, "root_task_required", "Only root tasks can reset a whole branch.");
+  }
+  return task;
+}
+
 function sanitizeName(name, label) {
   const value = typeof name === "string" ? name.trim() : "";
   if (!value) {
@@ -246,9 +479,19 @@ function sanitizeTaskPayload(input, options = {}) {
       categoryId: getInputValue(input, "categoryId", previous?.categoryId),
       parentTaskId: getInputValue(input, "parentTaskId", previous?.parentTaskId),
       assigneeId: getInputValue(input, "assigneeId", previous?.assigneeId ?? null),
+      noAssignee: getInputValue(input, "noAssignee", previous?.noAssignee ?? null),
       dependencyIds: getInputValue(input, "dependencyIds", previous?.dependencyIds ?? []),
       status: getInputValue(input, "status", previous?.status ?? DEFAULTS.status),
       priority: getInputValue(input, "priority", previous?.priority ?? DEFAULTS.priority),
+      timeMode: getInputValue(input, "timeMode", previous?.timeMode ?? DEFAULTS.timeMode),
+      trackedMs: getInputValue(input, "trackedMs", previous?.trackedMs ?? 0),
+      timerDurationMs: getInputValue(input, "timerDurationMs", previous?.timerDurationMs ?? null),
+      timerRemainingMs: getInputValue(input, "timerRemainingMs", previous?.timerRemainingMs ?? previous?.timerDurationMs ?? null),
+      timerStartedAt: getInputValue(input, "timerStartedAt", previous?.timerStartedAt ?? null),
+      timerRunning: getInputValue(input, "timerRunning", previous?.timerRunning ?? false),
+      dueDate: getInputValue(input, "dueDate", previous?.dueDate ?? null),
+      dueAt: getInputValue(input, "dueAt", previous?.dueAt ?? null),
+      completedAt: getInputValue(input, "completedAt", previous?.completedAt ?? null),
       notes: getInputValue(input, "notes", previous?.notes ?? ""),
     },
     { now, previous },
@@ -262,6 +505,9 @@ function sanitizeTaskPayload(input, options = {}) {
   }
   if (!TASK_PRIORITIES.includes(task.priority)) {
     throw new AppError(400, "invalid_priority", "Priority is invalid.");
+  }
+  if (!TASK_TIME_MODES.includes(task.timeMode)) {
+    throw new AppError(400, "invalid_time_mode", "Time mode is invalid.");
   }
   return task;
 }
@@ -433,6 +679,8 @@ export class TaskMapService {
   async updateTask(taskId, input) {
     return this.#mutate((snapshot) => {
       const task = ensureTaskExists(snapshot, taskId);
+      const previousStatus = task.status;
+      const previousCompletedAt = task.completedAt ?? null;
       const originalPhaseId = task.phaseId;
       const originalCategoryId = task.categoryId;
       const nextPhaseId = input.phaseId ?? task.phaseId;
@@ -456,6 +704,10 @@ export class TaskMapService {
 
       if (task.status === "completed") {
         ensureTaskCanComplete(snapshot, task.id);
+        pauseTaskTimer(task, task.updatedAt);
+        task.completedAt = previousStatus === "completed" ? (previousCompletedAt ?? task.updatedAt) : task.updatedAt;
+      } else {
+        task.completedAt = null;
       }
 
       if ((nextPhaseId !== originalPhaseId || nextCategoryId !== originalCategoryId) && task.parentTaskId === null) {
@@ -477,12 +729,110 @@ export class TaskMapService {
     }
 
     return this.#mutate((snapshot) => {
+      const referenceIso = nowIso();
+      const task = ensureTaskExists(snapshot, taskId);
       if (status === "completed") {
         ensureTaskCanComplete(snapshot, taskId);
+        pauseTaskTimer(task, referenceIso);
+        task.completedAt = referenceIso;
+      } else {
+        task.completedAt = null;
       }
-      const task = ensureTaskExists(snapshot, taskId);
       task.status = status;
-      task.updatedAt = nowIso();
+      task.updatedAt = referenceIso;
+      if (status === "discarded") {
+        pauseTaskTimer(task, referenceIso);
+        for (const descendantId of listDescendants(snapshot, taskId)) {
+          const descendant = ensureTaskExists(snapshot, descendantId);
+          if (descendant.status !== "discarded") {
+            pauseTaskTimer(descendant, referenceIso);
+            descendant.status = "discarded";
+            descendant.completedAt = null;
+            descendant.updatedAt = referenceIso;
+          }
+        }
+      }
+      return snapshot;
+    });
+  }
+
+  async startTaskTimer(taskId) {
+    return this.#mutate((snapshot) => {
+      const task = ensureTaskExists(snapshot, taskId);
+      ensureTaskHasLiveClock(task);
+      ensureTaskCanRunTimer(snapshot, taskId);
+
+      const referenceIso = nowIso();
+      for (const otherTask of snapshot.tasks) {
+        if (otherTask.id !== taskId) {
+          pauseTaskTimer(otherTask, referenceIso);
+        }
+      }
+
+      task.timerRunning = true;
+      task.timerStartedAt = referenceIso;
+      task.updatedAt = referenceIso;
+      return snapshot;
+    });
+  }
+
+  async pauseTaskTimer(taskId) {
+    return this.#mutate((snapshot) => {
+      const task = ensureTaskExists(snapshot, taskId);
+      ensureTaskHasLiveClock(task);
+      pauseTaskTimer(task, nowIso());
+      return snapshot;
+    });
+  }
+
+  async resetTaskTimer(taskId) {
+    return this.#mutate((snapshot) => {
+      const task = ensureTaskExists(snapshot, taskId);
+      ensureTaskHasLiveClock(task);
+      resetTaskTimer(task, nowIso());
+      return snapshot;
+    });
+  }
+
+  async resetMapProgress() {
+    return this.#mutate((snapshot) => {
+      const referenceIso = nowIso();
+      for (const task of snapshot.tasks) {
+        resetTaskProgressState(task, referenceIso);
+      }
+      return snapshot;
+    });
+  }
+
+  async resetPhaseProgress(phaseId) {
+    return this.#mutate((snapshot) => {
+      ensurePhaseExists(snapshot, phaseId);
+      const referenceIso = nowIso();
+      for (const task of snapshot.tasks.filter((item) => item.phaseId === phaseId)) {
+        resetTaskProgressState(task, referenceIso);
+      }
+      return snapshot;
+    });
+  }
+
+  async resetCategoryProgress(categoryId) {
+    return this.#mutate((snapshot) => {
+      ensureCategoryExists(snapshot, categoryId);
+      const referenceIso = nowIso();
+      for (const task of snapshot.tasks.filter((item) => item.categoryId === categoryId)) {
+        resetTaskProgressState(task, referenceIso);
+      }
+      return snapshot;
+    });
+  }
+
+  async resetRootTaskProgress(taskId) {
+    return this.#mutate((snapshot) => {
+      const rootTask = ensureRootTaskExists(snapshot, taskId);
+      const referenceIso = nowIso();
+      for (const scopedTaskId of [rootTask.id, ...listDescendants(snapshot, rootTask.id)]) {
+        resetTaskProgressState(ensureTaskExists(snapshot, scopedTaskId), referenceIso);
+      }
       return snapshot;
     });
   }
@@ -535,6 +885,7 @@ export class TaskMapService {
       this.#repairLegacySnapshot(draft);
       draft.savedAt = nowIso();
       const nextDraft = mutator(draft) ?? draft;
+      normalizeDiscardedCascade(nextDraft);
       normalizeCompletedHierarchy(nextDraft);
       return validateSnapshot(nextDraft);
     });
@@ -543,12 +894,14 @@ export class TaskMapService {
 
   #repairLegacySnapshot(snapshot) {
     const assigneeRepair = normalizeLegacyAssignees(snapshot);
+    const taskTimingRepair = normalizeLegacyTaskTiming(snapshot);
     const dependencyRepair = normalizeBranchDependencyConflicts(snapshot);
+    const discardRepair = normalizeDiscardedCascade(snapshot);
     const hierarchyRepair = normalizeCompletedHierarchy(snapshot);
-    if (assigneeRepair || dependencyRepair || hierarchyRepair) {
+    if (assigneeRepair || taskTimingRepair || dependencyRepair || discardRepair || hierarchyRepair) {
       snapshot.savedAt = nowIso();
     }
-    return assigneeRepair || dependencyRepair || hierarchyRepair;
+    return assigneeRepair || taskTimingRepair || dependencyRepair || discardRepair || hierarchyRepair;
   }
 
   async #readValidSnapshot() {
